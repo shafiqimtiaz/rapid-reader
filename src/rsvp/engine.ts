@@ -47,3 +47,22 @@ function tokenizeWord(raw: string): Token {
   if (word.length === 0) return { text: raw, pauseAfter: 1 };
   return { text: word, pauseAfter: pauseMultiplier(pauseChar) };
 }
+
+export interface PlaybackSettings {
+  wpm: number;
+  smartPauses: boolean;
+}
+
+export function delayFor(token: Token, wpm: number, smartPauses: boolean): number {
+  let delay = 60000 / wpm;
+  if (smartPauses) {
+    delay *= token.pauseAfter;
+    if (token.text.length > 8) delay *= 1.25;
+  }
+  return delay;
+}
+
+export function applyWpmChange(current: PlaybackSettings, direction: 1 | -1): PlaybackSettings {
+  const next = Math.round((current.wpm * (direction > 0 ? 1.2 : 0.8)) / 10) * 10;
+  return { ...current, wpm: Math.min(1000, Math.max(100, next)) };
+}
