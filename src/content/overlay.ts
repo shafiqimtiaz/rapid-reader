@@ -156,7 +156,7 @@ export class Overlay {
 
   private onKey = (e: KeyboardEvent): void => {
     switch (e.key) {
-      case ' ': e.preventDefault(); this.playing ? this.pause() : this.resume(); break;
+      case ' ': e.preventDefault(); if (this.playing) this.pause(); else this.resume(); break;
       case 'ArrowLeft': e.preventDefault(); this.step(-1); break;
       case 'ArrowRight': e.preventDefault(); this.step(1); break;
       case 'ArrowUp': e.preventDefault(); this.setSpeed(applyWpmChange(this.settings, 1).wpm); break;
@@ -171,7 +171,7 @@ export class Overlay {
     this.root?.querySelectorAll('[data-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const action = (btn as HTMLElement).dataset.action;
-        if (action === 'pause') this.playing ? this.pause() : this.resume();
+        if (action === 'pause') { if (this.playing) this.pause(); else this.resume(); }
         else if (action === 'back') this.skip(-10);
         else if (action === 'forward') this.skip(10);
         else if (action === 'slower') this.setSpeed(applyWpmChange(this.settings, -1).wpm);

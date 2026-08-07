@@ -8,7 +8,7 @@ function env() {
   const d = new JSDOM('<!DOCTYPE html><html><body><div id="page">article</div></body></html>', { pretendToBeVisual: true });
   globalThis.document = d.window.document;
   globalThis.window = d.window as unknown as Window & typeof globalThis;
-  globalThis.requestAnimationFrame = (_cb: FrameRequestCallback) => { return 1; };
+  globalThis.requestAnimationFrame = () => { return 1; };
   globalThis.cancelAnimationFrame = () => {};
   return d;
 }
