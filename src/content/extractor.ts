@@ -49,7 +49,7 @@ export function cleanText(root: HTMLElement): string {
   const visit = (node: Node) => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
-      if (text) parts.push(text);
+      if (text) { parts.push(text); lastWasBlock = false; }
       return;
     }
     const el = node as HTMLElement;
