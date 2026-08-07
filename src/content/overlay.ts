@@ -84,6 +84,7 @@ export class Overlay {
     if (this.playing || this.tokens.length === 0) return;
     this.playing = true;
     if (!this.startedAt) this.startedAt = Date.now();
+    this.updateMeta();
     this.nextAt = performance.now() + delayFor(this.tokens[this.index]!, this.settings.wpm, this.settings.smartPauses);
     const tick = (now: number) => {
       if (!this.playing) return;
