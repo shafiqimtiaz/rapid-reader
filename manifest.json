@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Rapid Read",
+  "version": "0.1.0",
+  "description": "RSVP speed reading overlay — read anything on the web 3x faster.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "action": { "default_title": "Rapid Read" },
+  "options_page": "options.html",
+  "commands": {
+    "toggle-read": {
+      "suggested_key": { "default": "Alt+R" },
+      "description": "Toggle Rapid Read on the current page"
+    }
+  },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}
