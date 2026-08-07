@@ -12,6 +12,7 @@
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/chrome": "^0.0.280",
+    "@types/jsdom": "^28.0.3",
     "eslint": "^9.0.0",
     "jsdom": "^25.0.0",
     "typescript": "^5.6.0",

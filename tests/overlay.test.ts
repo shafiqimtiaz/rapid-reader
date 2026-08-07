@@ -8,7 +8,7 @@ function env() {
   const d = new JSDOM('<!DOCTYPE html><html><body><div id="page">article</div></body></html>', { pretendToBeVisual: true });
   globalThis.document = d.window.document;
   globalThis.window = d.window as unknown as Window & typeof globalThis;
-  globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => { return 1; };
+  globalThis.requestAnimationFrame = (_cb: FrameRequestCallback) => { return 1; };
   globalThis.cancelAnimationFrame = () => {};
   return d;
 }
@@ -35,9 +35,9 @@ describe('Overlay', () => {
     overlay.start(tokenize('a b c'), 300);
     overlay.pause();
     overlay.step(1);
-    expect(hostWord(overlay)).toContain('b');
+    expect(hostWord()).toContain('b');
     overlay.step(1);
-    expect(hostWord(overlay)).toContain('c');
+    expect(hostWord()).toContain('c');
     overlay.unmount();
   });
 
@@ -51,7 +51,7 @@ describe('Overlay', () => {
   });
 });
 
-function hostWord(o: Overlay) {
+function hostWord() {
   const host = document.documentElement.lastElementChild as HTMLElement;
   return host.shadowRoot!.textContent ?? '';
 }

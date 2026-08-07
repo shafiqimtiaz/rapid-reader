@@ -4,7 +4,7 @@ import { aggregate, recordSession, getStats, type DayStats } from '../src/option
 const day = (date: string, words: number, seconds: number): DayStats => ({ date, words, seconds });
 
 function fakeStorage(initial: unknown = {}) {
-  let data = structuredClone(initial);
+  let data = structuredClone(initial) as Record<string, unknown>;
   globalThis.chrome = {
     storage: {
       local: {
