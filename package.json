@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "node scripts/gen-icons.mjs && vite build --config vite.content.config.ts && vite build --config vite.background.config.ts && vite build --config vite.options.config.ts && (cp public/options.html dist/options.html || true) && cp manifest.json dist/manifest.json",
+    "build": "node scripts/gen-icons.mjs && vite build --config vite.content.config.ts && vite build --config vite.background.config.ts && vite build --config vite.options.config.ts && cp manifest.json dist/manifest.json",
     "dev:content": "vite build --config vite.content.config.ts --watch",
     "test": "vitest run",
     "check": "tsc --noEmit && eslint ."
