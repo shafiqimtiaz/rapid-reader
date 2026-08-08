@@ -178,6 +178,38 @@ describe('Overlay', () => {
     spotlight.unmount();
   });
 
+  it('starts the flow animation in the same tick as the word, not a frame later', () => {
+    const overlay = new Overlay({ ...settings, readingMode: 'flow' }, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    let frames = 0;
+    globalThis.requestAnimationFrame = () => { frames++; return 1; };
+
+    overlay.start(tokenize('one two three'), 300);
+
+    const word = overlayEl('.word') as HTMLElement;
+    // A frame in between would paint the new word at rest, then snap it back to animate.
+    expect(word.classList.contains('flow-in')).toBe(true);
+    expect(frames).toBe(0);
+
+    overlay.step(1);
+    expect(word.classList.contains('flow-in')).toBe(true);
+    overlay.unmount();
+  });
+
+  it('settles the flow animation inside the word own time so it is never cut short', () => {
+    const overlay = new Overlay({ ...settings, readingMode: 'flow' }, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two three'), 300);
+    const word = overlayEl('.word') as HTMLElement;
+
+    // 300 wpm is 200ms a word, so the animation takes a fraction of that, not longer.
+    expect(word.style.animationDuration).toBe('80ms');
+
+    overlay.updateSettings({ ...settings, readingMode: 'flow', wpm: 100 });
+    expect(word.style.animationDuration).toBe('240ms');
+    overlay.unmount();
+  });
+
   it('blends the spotlight window into the softer backdrop', () => {
     const overlay = new Overlay({ ...settings, readingMode: 'spotlight' }, { onClose: () => {}, onStats: () => {} });
     overlay.mount();
@@ -445,6 +477,29 @@ describe('Overlay', () => {
     frames.tick(t0 + 260);
     expect(overlayEl('.word')!.textContent).toBe('four');
     overlay.unmount();
+  });
+
+  it('never shows a paragraph marker, holding the words through the rest instead', () => {
+    const clock = fakeClock();
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two\n\nthree four'), 300);
+    const frames = driveFrames();
+    overlay.resume();
+
+    // "two" is the last word of its paragraph, so it holds through the break's rest:
+    // 200ms of its own at 300 wpm, then the 1000ms the break is worth.
+    clock.set(400);
+    frames.tick(400);
+    expect(overlayEl('.word')!.textContent).toBe('two');
+    clock.set(1300);
+    frames.tick(1300);
+    expect(overlayEl('.word')!.textContent).toBe('two');
+    clock.set(1500);
+    frames.tick(1500);
+    expect(overlayEl('.word')!.textContent).toBe('three');
+    overlay.unmount();
+    clock.restore();
   });
 
   it('holds a chunk for as long as its words would take one at a time', () => {

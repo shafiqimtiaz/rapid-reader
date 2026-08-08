@@ -36,6 +36,10 @@ const FONT_FAMILIES: Record<FontFamily, string> = {
 const SEEK_DEBOUNCE_MS = 250;
 /** Below this a sync span is too short to time the voice by; the anchor waits for more. */
 const MIN_SYNC_WORDS = 8;
+/** Share of a word's time the flow animation may take, leaving the rest of it at rest. */
+const FLOW_SETTLE = 0.4;
+const FLOW_MIN_MS = 60;
+const FLOW_MAX_MS = 240;
 
 /** Wider chunks get smaller type so the whole group still fits on one line. */
 function chunkScale(wordsPerTick: number): number {
@@ -71,7 +75,6 @@ export class Overlay {
   private syncWord = -1;
   private syncAt = 0;
   private rafId = 0;
-  private flowFrameId = 0;
   private nextAt = 0;
   private startedAt = 0;
   private wordsDone = 0;
@@ -110,7 +113,6 @@ export class Overlay {
 
   unmount(): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
-    if (this.flowFrameId) cancelAnimationFrame(this.flowFrameId);
     this.stopSpeech();
     this.playing = false;
     this.host?.remove();
@@ -164,19 +166,35 @@ export class Overlay {
   private startTicker(): void {
     this.runTicker(
       () => this.chunkDelay(),
-      () => this.index + this.settings.wordsPerTick,
+      () => this.groupFrom(this.index).next,
     );
   }
 
   /** A chunk stays up for as long as its words would take one at a time, so wpm holds. */
   private chunkDelay(): number {
-    let total = 0;
-    for (let i = 0; i < this.settings.wordsPerTick; i++) {
-      const token = this.tokens[this.index + i];
-      if (!token) break;
-      total += delayFor(token, this.settings.wpm, this.settings.smartPauses);
+    return this.groupFrom(this.index).delay;
+  }
+
+  /**
+   * The words to show from `from`, how long they stay up, and where the next group starts.
+   * A paragraph break is a rest, not something to read, so its time is spent holding the
+   * words already on screen rather than flashing a marker in their place.
+   */
+  private groupFrom(from: number): { words: string[]; delay: number; next: number } {
+    const words: string[] = [];
+    const rest = (token: Token) => delayFor(token, this.settings.wpm, this.settings.smartPauses);
+    let delay = 0;
+    let at = from;
+    for (; at < this.tokens.length && words.length < this.settings.wordsPerTick; at++) {
+      const token = this.tokens[at]!;
+      delay += rest(token);
+      if (token.text !== '') words.push(token.text);
     }
-    return total;
+    // A break right after the group belongs to it, not to the word that comes next.
+    for (; at < this.tokens.length && this.tokens[at]!.text === ''; at++) {
+      delay += rest(this.tokens[at]!);
+    }
+    return { words, delay, next: at };
   }
 
   /**
@@ -389,17 +407,20 @@ export class Overlay {
       : `${icon(PlayIcon)}<span>Play</span>`;
   }
 
+  /** The words the voice is about to say, which is what the reader should be looking at. */
+  private spokenGroup(): string[] {
+    const words: string[] = [];
+    for (let i = 0; i < this.settings.wordsPerTick; i++) {
+      const at = this.spokenTokens[this.spokenAt + i];
+      if (at == null) break;
+      words.push(this.tokens[at]!.text);
+    }
+    return words;
+  }
+
   private render(): void {
     if (!this.wordEl) return;
-    const parts: string[] = [];
-    for (let i = 0; i < this.settings.wordsPerTick; i++) {
-      // Under the voice the group is the next words it will say; a ¶ is never one of them
-      // and would take the slot of a word the voice says anyway.
-      const at = this.speechExpected ? this.spokenTokens[this.spokenAt + i] : this.index + i;
-      const token = at == null ? undefined : this.tokens[at];
-      if (!token) break;
-      parts.push(token.text === '' ? '¶' : token.text);
-    }
+    const parts = this.speechExpected ? this.spokenGroup() : this.groupFrom(this.index).words;
     this.wordEl.classList.toggle('chunk', this.settings.wordsPerTick > 1);
     this.wordEl.textContent = parts.join(' ');
     if (this.settings.readingMode === 'flow') this.restartFlowAnimation();
@@ -408,16 +429,24 @@ export class Overlay {
   private restartFlowAnimation(): void {
     const word = this.wordEl;
     if (!word) return;
-    if (this.flowFrameId) cancelAnimationFrame(this.flowFrameId);
+    // Settle well inside the word's own time. An animation still running when the next word
+    // lands is snapped back to its start mid-fade, and at speed that pulsing is the flicker.
+    const step = this.speechExpected ? this.voiceStep() : this.chunkDelay();
+    const settle = Math.min(FLOW_MAX_MS, Math.max(FLOW_MIN_MS, step * FLOW_SETTLE));
+    word.style.animationDuration = `${Math.round(settle)}ms`;
     word.classList.remove('flow-in');
-    this.flowFrameId = requestAnimationFrame(() => {
-      this.flowFrameId = 0;
-      if (this.wordEl === word) word.classList.add('flow-in');
-    });
+    // Flushing the removal is what restarts the animation: remove and add within one frame
+    // otherwise coalesce into no change at all, and splitting them across two frames paints
+    // the new word at rest before dimming it again, which is the other half of the flicker.
+    word.getBoundingClientRect();
+    word.classList.add('flow-in');
   }
 
+  /** Words actually on screen, so the count read never includes a break passed over. */
   private visibleCount(): number {
-    return Math.min(this.settings.wordsPerTick, this.tokens.length - this.index);
+    return this.speechExpected
+      ? Math.min(this.settings.wordsPerTick, this.spokenTokens.length - this.spokenAt)
+      : this.groupFrom(this.index).words.length;
   }
 
   private renderState(title: string, sub: string): void {
