@@ -1,6 +1,6 @@
 import { MSG_START, MSG_STATS, MSG_OPEN_OPTIONS, MSG_SPEAK, MSG_SPEAK_STOP, MSG_SPEAK_STATE, MSG_SPEAK_PROGRESS, MSG_TTS_CHECK, type StartMessage, type SpeakStateMessage, type SpeakProgressMessage, type TtsCheckReply, type Message } from './src/shared/messages';
 import { recordSession } from './src/options/stats';
-import { speak } from './src/shared/tts';
+import { speak, stopSpeaking } from './src/shared/tts';
 
 async function sendStart(tabId: number, source: 'selection' | 'article'): Promise<boolean> {
   try {
@@ -86,7 +86,8 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     }).then((result) => { if (!result.ok) void notifySpeakState(tabId, false, result.reason); });
   }
   if (message.type === MSG_SPEAK_STOP) {
-    chrome.tts.stop();
+    // Not chrome.tts.stop: a queue still being timed would otherwise resume after the stop.
+    stopSpeaking();
   }
   if (message.type === MSG_TTS_CHECK) {
     void chrome.tts.getVoices().then((voices) => {

@@ -1,21 +1,38 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_CHUNK, TTS_BASE_WPM, rateForWpm, speak, utterances, wordAtChar } from '../src/shared/tts';
+import { MAX_CHUNK, TTS_BASE_WPM, rateForWpm, speak, stopSpeaking, utterances, wordAtChar } from '../src/shared/tts';
 import { DEFAULT_SETTINGS } from '../src/shared/settings';
 
 const speakSpy = vi.fn();
 const stopSpy = vi.fn();
+let speaking = false;
 
 function mockChrome(settings: Record<string, unknown>, voices: Array<{ voiceName: string; lang?: string }> = [{ voiceName: 'Test Voice', lang: 'en-GB' }]): void {
   speakSpy.mockClear();
   stopSpy.mockClear();
+  speaking = false;
   globalThis.chrome = {
     storage: { sync: { get: async () => ({ 'rr:settings': { ...DEFAULT_SETTINGS, ...settings } }) } },
-    tts: { speak: speakSpy, stop: stopSpy, getVoices: async () => voices },
+    tts: {
+      speak: speakSpy,
+      stop: stopSpy,
+      getVoices: async () => voices,
+      isSpeaking: (callback: (is: boolean) => void) => callback(speaking),
+    },
   } as unknown as typeof chrome;
 }
 
 const optionsOf = (call: number): chrome.tts.SpeakOptions => speakSpy.mock.calls[call]![1] as chrome.tts.SpeakOptions;
 const noHandlers = { onProgress: () => {}, onDone: () => {} };
+const longWords = () => Array.from({ length: 900 }, (_, i) => (i % 6 === 5 ? `w${i}.` : `w${i}`));
+
+/**
+ * Only the first piece is spoken up front; the rest waits until the engine reports or the
+ * first piece is timed. Reporting a start is the quickest way to get the whole queue out.
+ */
+async function queueTheRest(): Promise<void> {
+  optionsOf(0).onEvent?.({ type: 'start' } as chrome.tts.TtsEvent);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+}
 
 describe('utterances', () => {
   it('keeps short text as one utterance and records where each word starts', () => {
@@ -125,8 +142,8 @@ describe('speak', () => {
   it('reports each utterance start, the only sync point engines without word events give', async () => {
     mockChrome({});
     const onProgress = vi.fn();
-    const words = Array.from({ length: 900 }, (_, i) => (i % 6 === 5 ? `w${i}.` : `w${i}`));
-    await speak(words, 300, { onProgress, onDone: () => {} });
+    await speak(longWords(), 300, { onProgress, onDone: () => {} });
+    await queueTheRest();
 
     optionsOf(1).onEvent?.({ type: 'start' } as chrome.tts.TtsEvent);
 
@@ -135,19 +152,81 @@ describe('speak', () => {
 
   it('queues every utterance so long articles are read to the end', async () => {
     mockChrome({});
-    const words = Array.from({ length: 900 }, (_, i) => (i % 6 === 5 ? `w${i}.` : `w${i}`));
-    await speak(words, 300, noHandlers);
+    await speak(longWords(), 300, noHandlers);
+    await queueTheRest();
 
     expect(speakSpy.mock.calls.length).toBeGreaterThan(1);
     expect(optionsOf(0).enqueue).toBe(false);
     expect(optionsOf(1).enqueue).toBe(true);
   });
 
+  it('queues the rest at once when the engine reports for itself, with no gap to pay for', async () => {
+    mockChrome({});
+    const onProgress = vi.fn();
+    await speak(longWords(), 300, { onProgress, onDone: () => {} });
+    expect(speakSpy.mock.calls).toHaveLength(1);
+
+    speaking = true;
+    await queueTheRest();
+
+    expect(speakSpy.mock.calls.length).toBeGreaterThan(1);
+    // Only the engine's own report; nothing synthetic, since none was needed.
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith(0, 0);
+  });
+
+  it('times the first piece against silence when the engine reports nothing', async () => {
+    mockChrome({});
+    const onProgress = vi.fn();
+    await speak(longWords(), 300, { onProgress, onDone: () => {} });
+    expect(speakSpy.mock.calls).toHaveLength(1);
+
+    speaking = true;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(onProgress).toHaveBeenCalledWith(0, 0);
+    expect(speakSpy.mock.calls).toHaveLength(1);
+
+    speaking = false;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    // Two reports a known number of words apart: enough for the reader to time the voice.
+    expect(onProgress).toHaveBeenCalledWith(1, 0);
+    expect(speakSpy.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('takes the first piece ending as the boundary, without waiting for silence', async () => {
+    mockChrome({});
+    const onProgress = vi.fn();
+    await speak(longWords(), 300, { onProgress, onDone: () => {} });
+    speaking = true;
+
+    optionsOf(0).onEvent?.({ type: 'end' } as chrome.tts.TtsEvent);
+
+    expect(onProgress).toHaveBeenCalledWith(1, 0);
+    expect(speakSpy.mock.calls.length).toBeGreaterThan(1);
+    // A middle piece ending is a boundary, not the end of the reading.
+    expect(onProgress).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resume a queue that was stopped while being timed', async () => {
+    mockChrome({});
+    await speak(longWords(), 300, noHandlers);
+    speaking = true;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    stopSpeaking();
+    speaking = false;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(speakSpy.mock.calls).toHaveLength(1);
+    expect(stopSpy).toHaveBeenCalled();
+  });
+
   it('reports done once the last utterance ends, not the first', async () => {
     mockChrome({});
     const onDone = vi.fn();
-    const words = Array.from({ length: 900 }, (_, i) => (i % 6 === 5 ? `w${i}.` : `w${i}`));
-    await speak(words, 300, { onProgress: () => {}, onDone });
+    await speak(longWords(), 300, { onProgress: () => {}, onDone });
+    await queueTheRest();
     const last = speakSpy.mock.calls.length - 1;
 
     optionsOf(0).onEvent?.({ type: 'end' } as chrome.tts.TtsEvent);

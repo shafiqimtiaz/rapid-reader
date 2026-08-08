@@ -70,6 +70,35 @@ export function rateForWpm(wpm: number, calibration: number): number {
   return Math.min(10, Math.max(0.1, Math.round(rate * 100) / 100));
 }
 
+/** How often the voice is polled while the first piece is timed; also the worst-case gap. */
+const POLL_MS = 50;
+/** If the voice has not begun by now, give up timing it and keep the audio flowing. */
+const START_CAP_MS = 5000;
+/** Even a voice crawling at rate 0.1 finishes a 160-character piece inside this. */
+const FIRST_PIECE_CAP_MS = 120_000;
+
+/** Bumped by every speak and stop, so timing in flight knows it has been abandoned. */
+let epoch = 0;
+
+/** Stops the voice and abandons any timing still in flight. */
+export function stopSpeaking(): void {
+  epoch++;
+  chrome.tts.stop();
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isSpeaking = () => new Promise<boolean>((resolve) => chrome.tts.isSpeaking((speaking) => resolve(speaking)));
+
+/** Polls until the voice reaches `want`, or until waiting stops being worth it. */
+async function until(want: boolean, capMs: number, worthwhile: () => boolean): Promise<boolean> {
+  for (let waited = 0; waited < capMs; waited += POLL_MS) {
+    if (!worthwhile()) return false;
+    if (await isSpeaking() === want) return true;
+    await wait(POLL_MS);
+  }
+  return false;
+}
+
 export type SpeakResult = { ok: true } | { ok: false; reason: string };
 
 export interface SpeakHandlers {
@@ -93,11 +122,25 @@ export async function speak(words: string[], wpm: number, handlers: SpeakHandler
 
   const { ttsVoice, ttsRate, ttsPitch } = await loadSettings();
   const voiceName = voices.some((voice) => voice.voiceName === ttsVoice) ? ttsVoice : undefined;
+  epoch++;
+  const mine = epoch;
   chrome.tts.stop();
 
-  queue.forEach((utterance, i) => {
+  // `reported` means the reader has been placed by something other than polling for
+  // silence, so polling has nothing left to add. `over` means the voice has stopped.
+  let reported = false;
+  let over = false;
+  let queued = false;
+
+  const queueRest = () => {
+    if (queued || epoch !== mine || over) return;
+    queued = true;
+    for (let i = 1; i < queue.length; i++) say(i);
+  };
+
+  const say = (i: number) => {
     const last = i === queue.length - 1;
-    chrome.tts.speak(utterance.text, {
+    chrome.tts.speak(queue[i]!.text, {
       voiceName,
       rate: rateForWpm(wpm, ttsRate),
       pitch: ttsPitch,
@@ -110,17 +153,55 @@ export async function speak(words: string[], wpm: number, handlers: SpeakHandler
         // An utterance starting places the reader exactly; on engines with no word
         // events it is the only correction the display ever gets.
         if (event.type === 'start') {
+          reported = true;
           handlers.onProgress(i, 0);
           return;
         }
         if (event.type === 'word' || event.type === 'sentence') {
+          reported = true;
           handlers.onProgress(i, event.charIndex ?? 0);
           return;
         }
-        if (event.type === 'error' || event.type === 'interrupted' || event.type === 'cancelled') handlers.onDone();
-        else if (last && event.type === 'end') handlers.onDone();
+        if (event.type === 'end' && !last) {
+          // A piece ending is an exact boundary, so an engine that reports only this much
+          // still times the voice for the reader, and more precisely than silence does.
+          if (i === 0 && !reported) {
+            reported = true;
+            handlers.onProgress(1, 0);
+          }
+          queueRest();
+          return;
+        }
+        if (event.type === 'error' || event.type === 'interrupted' || event.type === 'cancelled') {
+          over = true;
+          handlers.onDone();
+        } else if (last && event.type === 'end') {
+          over = true;
+          handlers.onDone();
+        }
       },
     });
-  });
+  };
+
+  say(0);
+  if (queue.length === 1) return { ok: true };
+
+  /**
+   * A voice that reports nothing leaves the reader unable to time it, and a rate the
+   * engine may have ignored is all it would have to go on. So the first piece is spoken
+   * alone and bounded by polling: silence marks its end, and a report either side of it
+   * gives the reader a real measurement. The moment the engine reports for itself this
+   * is pointless, so the rest is queued at once and a well-behaved voice pays nothing.
+   */
+  void (async () => {
+    const worthwhile = () => epoch === mine && !over && !reported && !queued;
+    // Waiting for the voice to begin keeps engine startup out of the measurement.
+    if (!(await until(true, START_CAP_MS, worthwhile))) return queueRest();
+    handlers.onProgress(0, 0);
+    if (!(await until(false, FIRST_PIECE_CAP_MS, worthwhile))) return queueRest();
+    handlers.onProgress(1, 0);
+    queueRest();
+  })();
+
   return { ok: true };
 }
