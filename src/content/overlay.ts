@@ -407,13 +407,16 @@ export class Overlay {
         .stage, .bar, .bar button, .close, .meta { font-family: inherit; }
         .stage { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-top: 38vh; }
         .stage.focus .word { }
-        .stage.flow .word { opacity: 1; transform: translate3d(0, 0, 0); will-change: transform, opacity; }
+        /* Full width so the box never resizes between words — a shrinking box under an
+           animation re-centers every tick, which reads as horizontal shake. */
+        .stage.flow .word { width: 100%; opacity: 1; will-change: transform, opacity; }
         .stage.spotlight .word { }
         .word { font-size: ${FONT_SIZES[this.settings.fontSize]}; font-weight: 600; color: ${t.word}; letter-spacing: 0.02em; line-height: 1.15; min-height: 1.2em; text-align: center; padding: 0 6vw; max-width: 88vw; overflow-wrap: break-word; text-wrap: balance; }
         .word.chunk { font-size: calc(${FONT_SIZES[this.settings.fontSize]} * ${chunkScale(this.settings.wordsPerTick)}); letter-spacing: 0.01em; }
         .stage.spotlight .word { background: ${withAlpha(t.bg, 0.78)}; box-shadow: 0 14px 38px ${withAlpha(t.bg, 0.22)}; padding: 22px 34px; border-radius: 18px; }
         .stage.flow .word.flow-in { animation: rr-flow-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both; }
-        @keyframes rr-flow-in { from { transform: translate3d(12px, 0, 0); opacity: 0.35; } to { transform: translate3d(0, 0, 0); opacity: 1; } }
+        /* Vertical rise only: horizontal motion fights the centered word and jitters. */
+        @keyframes rr-flow-in { from { transform: translate3d(0, 6px, 0); opacity: 0.35; } to { transform: translate3d(0, 0, 0); opacity: 1; } }
         .meta { margin-top: 1rem; font-size: 13px; color: ${t.control}; letter-spacing: 0.08em; text-transform: uppercase; background: ${t.bg}; padding: 8px 16px; border-radius: 999px; }
         .bar { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-radius: 14px; background: ${t.bg}; box-shadow: 0 8px 30px rgba(0,0,0,0.35); border: 1px solid ${t.accent}33; }
         .bar button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: ${t.control}; font-size: 14px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-family: inherit; white-space: nowrap; }

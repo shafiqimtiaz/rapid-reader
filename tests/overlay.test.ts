@@ -164,6 +164,11 @@ describe('Overlay', () => {
     const flowStyle = (overlayEl('style') as HTMLStyleElement).textContent ?? '';
     expect(flowStyle).toContain('.stage.flow .word.flow-in');
     expect(flowStyle).toContain('rr-flow-in');
+    // Flow rises vertically; any X translation shakes the centered word.
+    const keyframes = /@keyframes rr-flow-in \{([^}]*\}[^}]*)\}/.exec(flowStyle)?.[1] ?? '';
+    expect(keyframes).toContain('translate3d(0, 6px, 0)');
+    expect(keyframes).not.toMatch(/translate3d\((?!0,)/);
+    expect(flowStyle).toContain('.stage.flow .word { width: 100%');
     flow.unmount();
 
     const spotlight = new Overlay({ ...settings, readingMode: 'spotlight' }, { onClose: () => {}, onStats: () => {} });
