@@ -196,9 +196,14 @@ export class Overlay {
     );
   }
 
-  /** How long the voice spends on one flashed group, by the best estimate of its speed. */
+  /** How long the voice spends on one word, by the best estimate of its speed. */
+  private wordStep(): number {
+    return 60000 / (this.voiceWpm || this.requestedVoiceWpm());
+  }
+
+  /** How long the voice spends on one flashed group. */
   private voiceStep(): number {
-    return (60000 / (this.voiceWpm || this.requestedVoiceWpm())) * this.settings.wordsPerTick;
+    return this.wordStep() * this.settings.wordsPerTick;
   }
 
   /** What the engine was asked for. Engines are free to ignore it, hence the timing below. */
@@ -290,13 +295,19 @@ export class Overlay {
     const token = this.spokenTokens[spoken];
     if (token == null) return;
     this.calibrateVoice(spoken);
-    this.wordsDone += Math.max(0, token - this.index);
-    this.index = token;
-    this.spokenAt = spoken;
-    // The engine is ground truth, so the step interval starts over from this word.
-    this.nextAt = performance.now() + this.voiceStep();
-    this.render();
-    this.updateMeta();
+    // A group is on screen until the voice leaves it. Chasing every word inside it would
+    // slide the group along a word at a time and show each word as often as it is wide.
+    const inGroup = spoken >= this.spokenAt && spoken < this.spokenAt + this.settings.wordsPerTick;
+    if (!inGroup) {
+      this.wordsDone += Math.max(0, token - this.index);
+      this.index = token;
+      this.spokenAt = spoken;
+      this.render();
+      this.updateMeta();
+    }
+    // The engine is ground truth: the next group is due when the voice runs out of this one.
+    const wordsLeft = this.spokenAt + this.settings.wordsPerTick - spoken;
+    this.nextAt = performance.now() + wordsLeft * this.wordStep();
   }
 
   /** The service worker reporting that speech stopped, for whatever reason. */
@@ -336,9 +347,10 @@ export class Overlay {
     this.voiceWpm = 0;
     this.syncWord = -1;
     this.utterances = utterances(words);
+    // Set before the first render so the group is built from the words the voice was given.
+    this.speechExpected = true;
     this.render();
     this.updateMeta();
-    this.speechExpected = true;
     void chrome.runtime.sendMessage({ type: MSG_SPEAK, words, wpm: this.settings.wpm } satisfies SpeakMessage);
     // Engines vary from a word event per word to none at all, so the display keeps its own
     // voice-paced clock from the first word and lets whatever events arrive correct it.
@@ -381,7 +393,10 @@ export class Overlay {
     if (!this.wordEl) return;
     const parts: string[] = [];
     for (let i = 0; i < this.settings.wordsPerTick; i++) {
-      const token = this.tokens[this.index + i];
+      // Under the voice the group is the next words it will say; a ¶ is never one of them
+      // and would take the slot of a word the voice says anyway.
+      const at = this.speechExpected ? this.spokenTokens[this.spokenAt + i] : this.index + i;
+      const token = at == null ? undefined : this.tokens[at];
       if (!token) break;
       parts.push(token.text === '' ? '¶' : token.text);
     }

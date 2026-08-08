@@ -492,6 +492,41 @@ describe('Overlay', () => {
     clock.restore();
   });
 
+  it('fills a chunk with the words the voice will say, not with paragraph marks', async () => {
+    mockRuntime(true);
+    const overlay = new Overlay({ ...settings, wordsPerTick: 3 }, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two\n\nthree four five'), 300);
+    await flush();
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+
+    overlay.resume();
+
+    // A ¶ in the group would take the slot of a word the voice is about to say.
+    expect(overlayEl('.word')!.textContent).toBe('one two three');
+    overlay.unmount();
+  });
+
+  it('holds a chunk while the voice is still somewhere inside it', async () => {
+    mockRuntime(true);
+    const overlay = new Overlay({ ...settings, wordsPerTick: 3 }, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('w0 w1 w2 w3 w4 w5 w6 w7'), 300);
+    await flush();
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    overlay.resume();
+    expect(overlayEl('.word')!.textContent).toBe('w0 w1 w2');
+
+    // Words are three chars apart in the utterance text: w1 at 3, w2 at 6, w3 at 9.
+    overlay.onSpeakProgress(0, 3);
+    overlay.onSpeakProgress(0, 6);
+    expect(overlayEl('.word')!.textContent).toBe('w0 w1 w2');
+
+    overlay.onSpeakProgress(0, 9);
+    expect(overlayEl('.word')!.textContent).toBe('w3 w4 w5');
+    overlay.unmount();
+  });
+
   it('hides the aloud button when the browser has no voice', async () => {
     mockRuntime(false);
     const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
