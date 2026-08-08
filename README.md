@@ -1,15 +1,47 @@
-# Rapid Reader
+<p align="center">
+  <img src="public/icons/logo.svg" alt="Rapid Reader" width="128" />
+</p>
 
-RSVP (Rapid Serial Visual Presentation) speed-reading extension for Chrome. Read anything on the web 3× faster: select text or start on the whole article, and Rapid Reader flashes one word at a time at a fixed point on screen, so your eyes never move.
+<h1 align="center">Rapid Reader</h1>
 
-## Features
+<p align="center">
+  <strong>RSVP speed reading for Chrome.</strong> Select any text, press <kbd>Alt</kbd>+<kbd>R</kbd>, and read it 3× faster — one word at a time, at a fixed point on screen, so your eyes never move.
+</p>
 
-- **Two entry modes** — read the current selection immediately, or start the whole article from any paragraph: <kbd>Alt</kbd>+<kbd>R</kbd> / toolbar click highlights the first word of every paragraph, and clicking one starts there.
-- **RSVP engine** — per-token timing with smart punctuation pauses: commas, semicolons, colons, dashes and sentence enders get proportionally longer rests; paragraph breaks pause the longest, spent holding the words already on screen rather than flashing a marker in their place. URLs, numbers and long words are handled explicitly. A multi-word chunk stays up for as long as its words would take one at a time, so wpm means the same thing at any chunk size.
-- **Shadow-DOM overlay** — isolated from page CSS, with dark / light / sepia themes, three font sizes and four fonts (the font choice applies to everything: reader word, meta line, control bar, options page). Hugeicons free icons throughout. Keyboard controls while reading: `Space` pause/resume, `←`/`→` step one word, `↑`/`↓` speed ±25 wpm, `[`/`]` skip 10 words, `Esc` close.
-- **Read aloud, in step with the words** — **Aloud** is a mode toggle, not a transport control: it arms the voice without making a sound. Play/Pause drives everything. With Aloud on, the voice becomes the clock and wpm instead sets the speech rate (`wpm / 180`, with a per-voice calibration slider): the display steps evenly at that rate, with no reading pauses and skipping the paragraph breaks the voice is never given, and every event the engine sends — a `word`, a `sentence`, or an utterance starting — snaps it back onto the word being spoken. Two events far enough apart also time the voice for real, so `wpm / 180` is only a seed and an engine that ignores the requested rate is measured rather than trusted; the first utterance is cut short to get that measurement early. A multi-word group is filled with the words the voice is about to say and holds until the voice leaves it, rather than sliding along a word at a time under every event. A voice that reports nothing at all is timed instead: the first piece is spoken on its own and bounded by its `end` event, or by polling `chrome.tts.isSpeaking` for silence if even that is missing, which is enough to measure the voice and pace the rest. Engines reporting per word stay exact; the rest stay within a word once the first measurement lands, a few seconds in. Since `chrome.tts` has no pause/resume, Pause stops the voice and Play re-speaks from the start of the current sentence. Seeking is debounced, so a held arrow key scrubs silently. Speech runs in the service worker on offline system voices, so it survives the overlay closing; if speech dies early the wpm ticker takes back over rather than freezing. With no voice installed, the button and the whole options section stay hidden.
-- **Reading stats** — words read, average WPM and estimated time saved (vs. a 240 WPM baseline), rolled up per day and kept 90 days. Dashboard on the options page.
-- **Settings persist and propagate** — every control on the options page saves to `chrome.storage.sync` on change (WPM 100–1000 in 25-wpm steps, reading mode, words per tick, theme, font size, font, smart pauses, read-aloud voice / rate / pitch) and a `storage.onChanged` listener applies it to every reader already open, so no tab needs reloading. Live preview on the options page.
+<p align="center">
+  <img src="docs/images/reader-active.png" alt="Rapid Reader overlay in action" width="720" />
+</p>
+
+## What it does
+
+Rapid Reader is an [RSVP](https://en.wikipedia.org/wiki/Rapid_serial_visual_presentation) (Rapid Serial Visual Presentation) reader: instead of moving your eyes across a line, it flashes each word at a fixed point at your chosen speed. Your eyes stay still, your brain stops subvocalizing at line-start, and articles that took 10 minutes take 3.
+
+- **Two entry modes** — read your current selection immediately, or start the whole article: <kbd>Alt</kbd>+<kbd>R</kbd> (or the toolbar icon) highlights the first word of every paragraph, and clicking one starts there.
+- **Per-token timing** — commas, semicolons, colons, dashes and sentence enders get proportionally longer rests; paragraph breaks pause the longest. URLs, numbers and long words are handled explicitly. Multi-word chunks stay up as long as their words would take one at a time, so WPM means the same thing at any chunk size.
+- **Read aloud, in step with the words** — optional read-aloud via Chrome's built-in text-to-speech. The voice becomes the clock: the display steps with the spoken word and re-syncs on every voice event, even on voices that report nothing (they're measured, not trusted). No voice installed? The button hides itself.
+- **Distraction-free by default** — the overlay lives in a shadow DOM (page CSS can't touch it), with dark / light / sepia themes, three font sizes, and four fonts.
+- **Reading stats** — words read, average WPM and time saved vs. a 240 WPM baseline, rolled up per day and kept 90 days.
+- **Settings that follow you** — every control saves to `chrome.storage.sync` and propagates live to readers already open. No reloads, no account, no data leaves your device.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| <kbd>Alt</kbd>+<kbd>R</kbd> | Toggle the reader on the current page |
+| <kbd>Space</kbd> | Pause / resume |
+| <kbd>←</kbd> / <kbd>→</kbd> | Step one word |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Speed ±25 WPM |
+| <kbd>[</kbd> / <kbd>]</kbd> | Skip 10 words |
+| <kbd>Esc</kbd> | Close |
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Reader active](docs/images/reader-active.png) | ![Reader paused](docs/images/reader-paused.png) |
+| Words flash at a fixed point, control bar below | Paused mid-article — speed, progress and position visible |
+| ![Start picker](docs/images/start-picker.png) | ![Options page](docs/images/options.png) |
+| Click a paragraph marker to start there | Reading, pacing and appearance settings + stats |
 
 ## Install (development)
 
@@ -23,11 +55,14 @@ npm run build
 3. **Load unpacked** → select the `dist/` directory
 4. Open any article page and press <kbd>Alt</kbd>+<kbd>R</kbd>, or click the toolbar icon
 
+> [!NOTE]
+> The extension injects on user gesture (via `activeTab`) rather than through a static content script — no host permissions are requested. Local `file://` testing (e.g. `test-pages/article.html`) requires **Allow access to file URLs** in `chrome://extensions` → Rapid Reader → Details → Site access.
+
 ## Development
 
 ```bash
 npm run check   # tsc --noEmit + eslint
-npm test        # vitest — tokenizer, pauses, timing, stats, extractor, start markers, overlay, settings, tts, messages
+npm test        # vitest — 142 tests across tokenizer, pauses, timing, stats, extractor, markers, overlay, settings, tts, messages
 npm run build   # icons → content script → background → options page → manifest, into dist/
 ```
 
@@ -43,26 +78,20 @@ The build runs four Vite passes into `dist/`:
 
 `npm run dev:content` rebuilds the content script on change; after a content-script change, reload the extension on `chrome://extensions`.
 
-`test-pages/article.html` is a local sample article for manual smoke testing. Note: since the extension injects on user gesture (activeTab) rather than via a static content script, `file://` pages need **Allow access to file URLs** enabled in `chrome://extensions` → Rapid Reader → Details → Site access.
-
 ## Architecture
 
 ```
-background.ts            service worker — Alt+R / toolbar toggle, ensures injection, records sessions
+background.ts            service worker — Alt+R / toolbar toggle, gesture-based injection, records sessions
 src/content/index.ts     wiring — message handling, selection/article extraction, overlay lifecycle
 src/content/extractor.ts non-destructive article + selection extraction: scores prose containers,
                          rejects link-dense menus, widens to reach a headline outside the body wrapper
 src/content/overlay.ts   shadow-DOM RSVP overlay (controls, themes, font sizes)
+src/content/start-marker.ts  clickable paragraph-start markers, offsets derived from the same walk as the tokenizer
 src/rsvp/engine.ts       tokenizer + RSVP timing (per-token delays, 25 wpm steps, sentence starts)
 src/rsvp/pauses.ts       punctuation pause multipliers
 src/options/             options page UI + reading-stats rollup
-src/content/start-marker.ts  clickable paragraph-start markers, offsets derived from the same walk as the tokenizer
 src/shared/settings.ts   settings model, defaults, storage sync
 src/shared/tts.ts        chrome.tts read-aloud — utterance queue, wpm→rate, charIndex→word mapping
 src/shared/icon.ts       renders Hugeicons data as SVG (no framework renderer needed)
 src/shared/messages.ts   content ↔ background message contract
 ```
-
-## License
-
-Private project — all rights reserved.
