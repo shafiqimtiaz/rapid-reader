@@ -86,7 +86,7 @@ function svg() {
   const bars = BARS.map((bar) =>
     `  <rect x="${bar.x}" y="${bar.y}" width="${bar.w}" height="${bar.h}" rx="${bar.r}" fill="rgb(${bar.fill.join(',')})"/>`,
   ).join('\n');
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID} ${GRID}" role="img" aria-label="Rapid Read">
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID} ${GRID}" role="img" aria-label="Rapid Reader">
   <rect x="${TILE.x}" y="${TILE.y}" width="${TILE.w}" height="${TILE.h}" rx="${TILE.r}" fill="rgb(${INDIGO.join(',')})"/>
 ${bars}
 </svg>

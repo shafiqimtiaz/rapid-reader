@@ -29,7 +29,7 @@ const ttsPitch = $<HTMLInputElement>('ttsPitch');
 const ttsRateVal = $<HTMLElement>('ttsRateVal');
 const ttsPitchVal = $<HTMLElement>('ttsPitchVal');
 
-const TEST_PHRASE = 'Rapid Read will speak the article in this voice.';
+const TEST_PHRASE = 'Rapid Reader will speak the article in this voice.';
 
 const THEME_BG: Record<Settings['theme'], string> = { dark: '#0f1115', light: '#ffffff', sepia: '#f4ecd8' };
 const THEME_FG: Record<Settings['theme'], string> = { dark: '#e7e9ee', light: '#1f2937', sepia: '#3b3226' };

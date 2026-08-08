@@ -26,7 +26,7 @@ async function toggleRead(tabId: number): Promise<void> {
   if (ok) return;
   const injected = await ensureInjected(tabId);
   if (!injected) {
-    await flashBadge(tabId, '!', 'Rapid Read: this page cannot be read.');
+    await flashBadge(tabId, '!', 'Rapid Reader: this page cannot be read.');
     return;
   }
   await sendStart(tabId, 'article');
@@ -37,7 +37,7 @@ async function flashBadge(tabId: number, text: string, title: string): Promise<v
   await chrome.action.setTitle({ tabId, title });
   setTimeout(async () => {
     await chrome.action.setBadgeText({ tabId, text: '' });
-    await chrome.action.setTitle({ tabId, title: 'Rapid Read' });
+    await chrome.action.setTitle({ tabId, title: 'Rapid Reader' });
   }, 4000);
 }
 

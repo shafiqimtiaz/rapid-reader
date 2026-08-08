@@ -1,6 +1,6 @@
-# Rapid Read
+# Rapid Reader
 
-RSVP (Rapid Serial Visual Presentation) speed-reading extension for Chrome. Read anything on the web 3× faster: select text or start on the whole article, and Rapid Read flashes one word at a time at a fixed point on screen, so your eyes never move.
+RSVP (Rapid Serial Visual Presentation) speed-reading extension for Chrome. Read anything on the web 3× faster: select text or start on the whole article, and Rapid Reader flashes one word at a time at a fixed point on screen, so your eyes never move.
 
 ## Features
 
