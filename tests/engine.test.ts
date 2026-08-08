@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tokenize } from '../src/rsvp/engine';
+import { tokenize, tokenizeParagraphs } from '../src/rsvp/engine';
 
 describe('tokenize', () => {
   it('splits words and maps sentence-ender pause', () => {
@@ -56,5 +56,19 @@ describe('tokenize', () => {
       { text: 'a', pauseAfter: 1 },
       { text: 'b', pauseAfter: 1 },
     ]);
+  });
+});
+
+describe('tokenizeParagraphs', () => {
+  it('reports token offset for each paragraph start', () => {
+    const p = tokenizeParagraphs('one two\n\nthree four\n\nfive');
+    expect(p.paragraphs).toEqual(['one two', 'three four', 'five']);
+    expect(p.starts).toEqual([0, 3, 6]);
+    expect(p.tokens[2]?.text).toBe('');
+  });
+  it('skips blank paragraph blocks', () => {
+    const p = tokenizeParagraphs('one\n\n  \n\ntwo');
+    expect(p.paragraphs).toEqual(['one', 'two']);
+    expect(p.starts).toEqual([0, 2]);
   });
 });

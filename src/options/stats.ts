@@ -23,6 +23,13 @@ export function aggregate(days: DayStats[]): Aggregate {
   return { totalWords, totalSeconds, avgWpm, timeSavedSeconds };
 }
 
+export function hasRecentStats(days: DayStats[], now: Date = new Date()): boolean {
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - 13);
+  const cutoffKey = cutoff.toISOString().slice(0, 10);
+  return days.some((d) => d.words > 0 && d.date >= cutoffKey);
+}
+
 export async function recordSession(words: number, seconds: number): Promise<void> {
   if (words < 1) return;
   const stored = await chrome.storage.local.get(KEY);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { delayFor, applyWpmChange, type Token } from '../src/rsvp/engine';
+import { delayFor, applyWpmChange, stepWpm, type Token } from '../src/rsvp/engine';
 
 const word = (text: string, pauseAfter = 1): Token => ({ text, pauseAfter });
 
@@ -23,12 +23,20 @@ describe('delayFor', () => {
 });
 
 describe('applyWpmChange', () => {
-  it('steps 20% up and down', () => {
-    expect(applyWpmChange({ wpm: 300, smartPauses: true }, 1)).toEqual({ wpm: 360, smartPauses: true });
-    expect(applyWpmChange({ wpm: 300, smartPauses: true }, -1)).toEqual({ wpm: 240, smartPauses: true });
+  it('steps by a fixed 25 wpm up and down', () => {
+    expect(applyWpmChange({ wpm: 300, smartPauses: true }, 1)).toEqual({ wpm: 325, smartPauses: true });
+    expect(applyWpmChange({ wpm: 300, smartPauses: true }, -1)).toEqual({ wpm: 275, smartPauses: true });
+  });
+  it('returns to the starting speed after up then down', () => {
+    const up = applyWpmChange({ wpm: 300, smartPauses: true }, 1);
+    expect(applyWpmChange(up, -1).wpm).toBe(300);
+  });
+  it('snaps off-grid speeds onto the 25 wpm grid', () => {
+    expect(stepWpm(310, 1)).toBe(325);
+    expect(stepWpm(310, -1)).toBe(275);
   });
   it('clamps at 100 and 1000', () => {
     expect(applyWpmChange({ wpm: 120, smartPauses: true }, -1).wpm).toBe(100);
-    expect(applyWpmChange({ wpm: 900, smartPauses: true }, 1).wpm).toBe(1000);
+    expect(applyWpmChange({ wpm: 1000, smartPauses: true }, 1).wpm).toBe(1000);
   });
 });

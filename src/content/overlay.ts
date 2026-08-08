@@ -1,16 +1,22 @@
-import { fixationIndex } from '../rsvp/fixation';
 import { applyWpmChange, delayFor, type Token } from '../rsvp/engine';
-import type { Settings, Theme } from '../shared/settings';
+import type { Settings, Theme, FontFamily } from '../shared/settings';
+import { MSG_OPEN_OPTIONS, MSG_SPEAK, MSG_SPEAK_STOP, MSG_TTS_CHECK, type SpeakMessage, type TtsCheckMessage, type TtsCheckReply } from '../shared/messages';
+import { icon } from '../shared/icon';
+import { utterances, wordAtChar, type Utterance } from '../shared/tts';
+import {
+  Backward01Icon, Cancel01Icon, Forward01Icon, MinusSignIcon, PauseIcon, PlayIcon, PlusSignIcon,
+  Settings01Icon, StopCircleIcon, VolumeHighIcon,
+} from '@hugeicons/core-free-icons';
 
 interface OverlayCallbacks {
   onClose: () => void;
   onStats: (words: number, seconds: number) => void;
 }
 
-const THEMES: Record<Theme, { bg: string; word: string; anchor: string; dim: string; control: string; accent: string }> = {
-  dark: { bg: '#0f1115', word: '#e7e9ee', anchor: '#f87171', dim: 'rgba(0,0,0,0.55)', control: '#9ca3af', accent: '#818cf8' },
-  light: { bg: '#ffffff', word: '#1f2937', anchor: '#dc2626', dim: 'rgba(0,0,0,0.25)', control: '#6b7280', accent: '#4f46e5' },
-  sepia: { bg: '#f4ecd8', word: '#3b3226', anchor: '#b3452a', dim: 'rgba(0,0,0,0.35)', control: '#8a7a5f', accent: '#a8763e' },
+const THEMES: Record<Theme, { bg: string; word: string; control: string; accent: string }> = {
+  dark: { bg: '#0f1115', word: '#e7e9ee', control: '#9ca3af', accent: '#818cf8' },
+  light: { bg: '#ffffff', word: '#1f2937', control: '#6b7280', accent: '#4f46e5' },
+  sepia: { bg: '#f4ecd8', word: '#3b3226', control: '#8a7a5f', accent: '#a8763e' },
 };
 
 const FONT_SIZES: Record<Settings['fontSize'], string> = {
@@ -19,15 +25,40 @@ const FONT_SIZES: Record<Settings['fontSize'], string> = {
   large: 'clamp(48px, 9vw, 88px)',
 };
 
+const FONT_FAMILIES: Record<FontFamily, string> = {
+  system: `-apple-system, "Segoe UI", Roboto, sans-serif`,
+  serif: `Georgia, "Times New Roman", serif`,
+  mono: `"SF Mono", "Cascadia Code", Consolas, monospace`,
+  rounded: `"Nunito", "Avenir Next", "Segoe UI", sans-serif`,
+};
+
+/** Wider chunks get smaller type so the whole group still fits on one line. */
+function chunkScale(wordsPerTick: number): number {
+  if (wordsPerTick <= 1) return 1;
+  return Math.round(Math.max(0.42, 1 / Math.sqrt(wordsPerTick)) * 100) / 100;
+}
+
+function withAlpha(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 export class Overlay {
   private host: HTMLElement | null = null;
   private root: ShadowRoot | null = null;
   private wordEl: HTMLElement | null = null;
   private metaEl: HTMLElement | null = null;
+  private playBtn: HTMLElement | null = null;
+  private aloudBtn: HTMLElement | null = null;
   private tokens: Token[] = [];
   private index = 0;
   private playing = false;
+  private speaking = false;
+  private ttsAvailable = false;
+  private utterances: Utterance[] = [];
+  private spokenTokens: number[] = [];
   private rafId = 0;
+  private flowFrameId = 0;
   private nextAt = 0;
   private startedAt = 0;
   private wordsDone = 0;
@@ -48,14 +79,26 @@ export class Overlay {
     this.root.innerHTML = this.html();
     this.wordEl = this.root.querySelector('.word') as HTMLElement;
     this.metaEl = this.root.querySelector('.meta') as HTMLElement;
+    this.playBtn = this.root.querySelector('[data-action="pause"]') as HTMLElement | null;
+    this.aloudBtn = this.root.querySelector('[data-action="aloud"]') as HTMLElement | null;
     this.applyTheme();
     this.bindKeys();
     this.bindControls();
     document.documentElement.appendChild(this.host);
+    void this.revealAloudIfSupported();
+  }
+
+  /** The Aloud button stays hidden unless the browser actually has a voice installed. */
+  private async revealAloudIfSupported(): Promise<void> {
+    const reply = await chrome.runtime.sendMessage({ type: MSG_TTS_CHECK } satisfies TtsCheckMessage) as TtsCheckReply | undefined;
+    this.ttsAvailable = reply?.available === true;
+    if (this.aloudBtn) this.aloudBtn.hidden = !this.ttsAvailable;
   }
 
   unmount(): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.flowFrameId) cancelAnimationFrame(this.flowFrameId);
+    this.stopAloud();
     this.playing = false;
     this.host?.remove();
     this.host = null;
@@ -67,9 +110,9 @@ export class Overlay {
     }
   }
 
-  start(tokens: Token[], wpm: number): void {
+  start(tokens: Token[], wpm: number, startIndex = 0): void {
     this.tokens = tokens;
-    this.index = 0;
+    this.index = Math.min(tokens.length - 1, Math.max(0, startIndex));
     this.wordsDone = 0;
     this.statsSent = false;
     this.startedAt = 0;
@@ -79,18 +122,19 @@ export class Overlay {
     this.pause();
   }
 
-  pause(): void { this.playing = false; if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; } this.updateMeta(); }
+  pause(): void { this.playing = false; if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; } this.updatePlayBtn(); this.updateMeta(); }
   resume(): void {
     if (this.playing || this.tokens.length === 0) return;
     this.playing = true;
     if (!this.startedAt) this.startedAt = Date.now();
+    this.updatePlayBtn();
     this.updateMeta();
     this.nextAt = performance.now() + delayFor(this.tokens[this.index]!, this.settings.wpm, this.settings.smartPauses);
     const tick = (now: number) => {
       if (!this.playing) return;
       while (now >= this.nextAt && this.playing) {
-        this.wordsDone++;
-        this.index++;
+        this.wordsDone += this.visibleCount();
+        this.index += this.settings.wordsPerTick;
         if (this.index >= this.tokens.length) { this.finish(); return; }
         this.render();
         this.updateMeta();
@@ -108,34 +152,111 @@ export class Overlay {
   }
 
   skip(delta: number): void { this.step(delta); }
-  setSpeed(wpm: number): void { this.settings = { ...this.settings, wpm }; if (this.playing) { this.pause(); this.resume(); } this.updateMeta(); }
-  updateSettings(s: Settings): void { this.settings = s; this.applyTheme(); }
+  setSpeed(wpm: number): void {
+    this.settings = { ...this.settings, wpm };
+    if (this.playing) { this.pause(); this.resume(); }
+    // Speech is paced off wpm, so a speed change has to restart the utterance queue.
+    if (this.speaking) { this.stopAloud(); this.toggleAloud(); }
+    this.updateMeta();
+  }
+  updateSettings(s: Settings): void {
+    this.settings = s;
+    this.applyTheme();
+    if (this.tokens.length === 0) return;
+    this.render();
+    this.updateMeta();
+  }
+
+  /** Speaks the text from the current token onward via the service worker. */
+  toggleAloud(): void {
+    if (this.speaking) { this.stopAloud(); return; }
+    // Paragraph-break tokens are dropped for speech, so keep a map back to the reader.
+    const spokenTokens: number[] = [];
+    const words: string[] = [];
+    for (let i = this.index; i < this.tokens.length; i++) {
+      if (this.tokens[i]!.text === '') continue;
+      spokenTokens.push(i);
+      words.push(this.tokens[i]!.text);
+    }
+    if (words.length === 0) return;
+    this.spokenTokens = spokenTokens;
+    this.utterances = utterances(words);
+    this.pause();
+    this.setSpeaking(true);
+    void chrome.runtime.sendMessage({ type: MSG_SPEAK, words, wpm: this.settings.wpm } satisfies SpeakMessage);
+  }
+
+  /** Moves the reader onto the word the voice is currently saying. */
+  onSpeakProgress(utteranceIndex: number, charIndex: number): void {
+    const utterance = this.utterances[utteranceIndex];
+    if (!utterance || !this.speaking) return;
+    const spoken = utterance.startWord + wordAtChar(utterance, charIndex);
+    const token = this.spokenTokens[spoken];
+    if (token == null) return;
+    this.wordsDone += Math.max(0, token - this.index);
+    this.index = token;
+    this.render();
+    this.updateMeta();
+  }
+
+  stopAloud(): void {
+    if (!this.speaking) return;
+    this.setSpeaking(false);
+    void chrome.runtime.sendMessage({ type: MSG_SPEAK_STOP });
+  }
+
+  setSpeaking(speaking: boolean, reason?: string): void {
+    this.speaking = speaking;
+    if (this.aloudBtn) {
+      this.aloudBtn.innerHTML = speaking
+        ? `${icon(StopCircleIcon)}<span>Stop</span>`
+        : `${icon(VolumeHighIcon)}<span>Aloud</span>`;
+    }
+    if (reason && this.metaEl) this.metaEl.textContent = reason;
+  }
 
   showEmpty(): void { this.renderState('No readable text found.', ''); }
   showError(message: string): void { this.renderState('Something went wrong.', message); }
 
   private finish(): void {
     this.playing = false;
+    this.updatePlayBtn();
     this.renderState('Finished', `${this.wordsDone} words · press Esc to close`);
   }
 
+  private updatePlayBtn(): void {
+    if (!this.playBtn) return;
+    this.playBtn.innerHTML = this.playing
+      ? `${icon(PauseIcon)}<span>Pause</span>`
+      : `${icon(PlayIcon)}<span>Play</span>`;
+  }
+
   private render(): void {
-    const token = this.tokens[this.index];
-    if (!token || !this.wordEl) return;
-    if (token.text === '') { this.wordEl.textContent = '¶'; return; }
-    const idx = Math.min(fixationIndex(token.text.length), token.text.length - 1);
-    const before = token.text.slice(0, idx);
-    const anchor = token.text.slice(idx, idx + 1);
-    const after = token.text.slice(idx + 1);
-    this.wordEl.innerHTML = '';
-    const b = document.createElement('span');
-    b.textContent = before;
-    const a = document.createElement('span');
-    a.className = 'anchor';
-    a.textContent = anchor;
-    const af = document.createElement('span');
-    af.textContent = after;
-    this.wordEl.append(b, a, af);
+    if (!this.wordEl) return;
+    const parts: string[] = [];
+    for (let i = 0; i < this.settings.wordsPerTick; i++) {
+      const token = this.tokens[this.index + i];
+      if (!token) break;
+      parts.push(token.text === '' ? '¶' : token.text);
+    }
+    this.wordEl.classList.toggle('chunk', this.settings.wordsPerTick > 1);
+    this.wordEl.textContent = parts.join(' ');
+    if (this.settings.readingMode === 'flow') this.restartFlowAnimation();
+  }
+
+  private restartFlowAnimation(): void {
+    const word = this.wordEl;
+    if (!word) return;
+    if (this.flowFrameId) cancelAnimationFrame(this.flowFrameId);
+    word.classList.remove('flow-in');
+    this.flowFrameId = requestAnimationFrame(() => {
+      this.flowFrameId = 0;
+      if (this.wordEl === word) word.classList.add('flow-in');
+    });
+  }
+
+  private visibleCount(): number {
+    return Math.min(this.settings.wordsPerTick, this.tokens.length - this.index);
   }
 
   private renderState(title: string, sub: string): void {
@@ -177,28 +298,54 @@ export class Overlay {
         else if (action === 'forward') this.skip(10);
         else if (action === 'slower') this.setSpeed(applyWpmChange(this.settings, -1).wpm);
         else if (action === 'faster') this.setSpeed(applyWpmChange(this.settings, 1).wpm);
+        else if (action === 'aloud') this.toggleAloud();
+        else if (action === 'settings') this.openSettings();
         else if (action === 'close') this.callbacks.onClose();
       });
     });
+  }
+
+  private openSettings(): void {
+    void chrome.runtime.sendMessage({ type: MSG_OPEN_OPTIONS });
   }
 
   private applyTheme(): void {
     const t = THEMES[this.settings.theme];
     const host = this.host;
     if (!host) return;
-    host.style.background = t.dim;
+    // The host carries `all: initial` inline, which outranks any :host rule, so the
+    // font has to be set inline for the whole shadow tree to inherit it.
+    host.style.fontFamily = FONT_FAMILIES[this.settings.fontFamily];
+    host.style.background = withAlpha(t.bg, 0.64);
+    host.style.backdropFilter = 'blur(24px) saturate(1.6)';
+    host.style.setProperty('-webkit-backdrop-filter', 'blur(24px) saturate(1.6)');
+    const stage = this.root?.querySelector('.stage') as HTMLElement | null;
+    if (stage) { stage.className = 'stage'; stage.classList.add(this.settings.readingMode); }
     const style = this.root?.querySelector('style') as HTMLStyleElement | null;
     if (style) {
       style.textContent = `
-        :host { all: initial; }
-        .stage { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-top: 38vh; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
-        .word { font-size: ${FONT_SIZES[this.settings.fontSize]}; font-weight: 600; color: ${t.word}; letter-spacing: 0.02em; min-height: 1.2em; text-align: center; padding: 0 6vw; }
-        .anchor { color: ${t.anchor}; }
-        .meta { margin-top: 1rem; font-size: 13px; color: ${t.control}; letter-spacing: 0.08em; text-transform: uppercase; }
-        .bar { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; padding: 8px 12px; border-radius: 12px; background: ${t.bg}; box-shadow: 0 8px 30px rgba(0,0,0,0.35); opacity: 0.25; transition: opacity 0.2s; }
-        .bar:hover { opacity: 1; }
-        .bar button { border: 0; background: transparent; color: ${t.control}; font-size: 15px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-family: inherit; }
-        .bar button:hover { background: ${t.accent}22; color: ${t.accent}; }
+        /* One font for the whole reader: stage, meta, control bar and close button. */
+        :host { all: initial; font-family: ${FONT_FAMILIES[this.settings.fontFamily]}; }
+        .stage, .bar, .bar button, .close, .meta { font-family: inherit; }
+        .stage { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-top: 38vh; }
+        .stage.focus .word { }
+        .stage.flow .word { opacity: 1; transform: translate3d(0, 0, 0); will-change: transform, opacity; }
+        .stage.spotlight .word { }
+        .word { font-size: ${FONT_SIZES[this.settings.fontSize]}; font-weight: 600; color: ${t.word}; letter-spacing: 0.02em; line-height: 1.15; min-height: 1.2em; text-align: center; padding: 0 6vw; max-width: 88vw; overflow-wrap: break-word; text-wrap: balance; }
+        .word.chunk { font-size: calc(${FONT_SIZES[this.settings.fontSize]} * ${chunkScale(this.settings.wordsPerTick)}); letter-spacing: 0.01em; }
+        .stage.spotlight .word { background: ${withAlpha(t.bg, 0.78)}; box-shadow: 0 14px 38px ${withAlpha(t.bg, 0.22)}; padding: 22px 34px; border-radius: 18px; }
+        .stage.flow .word.flow-in { animation: rr-flow-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both; }
+        @keyframes rr-flow-in { from { transform: translate3d(12px, 0, 0); opacity: 0.35; } to { transform: translate3d(0, 0, 0); opacity: 1; } }
+        .meta { margin-top: 1rem; font-size: 13px; color: ${t.control}; letter-spacing: 0.08em; text-transform: uppercase; background: ${t.bg}; padding: 8px 16px; border-radius: 999px; }
+        .bar { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-radius: 14px; background: ${t.bg}; box-shadow: 0 8px 30px rgba(0,0,0,0.35); border: 1px solid ${t.accent}33; }
+        .bar button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: ${t.control}; font-size: 14px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-family: inherit; white-space: nowrap; }
+        .icon { flex: none; display: block; }
+        .bar button:hover { background: ${t.accent}33; color: ${t.accent}; }
+        .bar .primary { color: ${t.accent}; font-weight: 600; min-width: 96px; text-align: center; }
+        .close { display: inline-flex; align-items: center; gap: 6px; position: fixed; z-index: 3; top: 18px; right: 18px; appearance: none; border: 1px solid ${t.accent}55; background: ${withAlpha(t.bg, 0.9)}; color: ${t.control}; font-size: 13px; font-weight: 500; line-height: 1.2; padding: 8px 14px; border-radius: 999px; cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease; }
+        .close:hover { border-color: ${t.accent}; background: ${withAlpha(t.accent, 0.15)}; color: ${t.accent}; }
+        .close:focus-visible { outline: 2px solid ${t.accent}; outline-offset: 2px; }
+        .stage[hidden], .bar[hidden], .bar button[hidden] { display: none !important; }
       `;
     }
   }
@@ -206,14 +353,16 @@ export class Overlay {
   private html(): string {
     return `
       <style></style>
+      <button data-action="close" class="close">${icon(Cancel01Icon, 15)}<span>Close</span></button>
       <div class="stage"><div class="word"></div><div class="meta"></div></div>
       <div class="bar">
-        <button data-action="back">« −10</button>
-        <button data-action="pause">⏯ Pause</button>
-        <button data-action="forward">+10 »</button>
-        <button data-action="slower">− Speed</button>
-        <button data-action="faster">+ Speed</button>
-        <button data-action="close">✕ Close</button>
+        <button data-action="back" title="Back 10 words">${icon(Backward01Icon)}<span>10</span></button>
+        <button class="primary" data-action="pause">${icon(PlayIcon)}<span>Play</span></button>
+        <button data-action="forward" title="Forward 10 words">${icon(Forward01Icon)}<span>10</span></button>
+        <button data-action="slower" title="Slower">${icon(MinusSignIcon)}<span>Speed</span></button>
+        <button data-action="faster" title="Faster">${icon(PlusSignIcon)}<span>Speed</span></button>
+        <button data-action="aloud" title="Read aloud from here with the system voice" hidden>${icon(VolumeHighIcon)}<span>Aloud</span></button>
+        <button data-action="settings" title="Settings">${icon(Settings01Icon)}<span>Settings</span></button>
       </div>`;
   }
 }

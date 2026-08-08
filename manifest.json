@@ -3,7 +3,7 @@
   "name": "Rapid Read",
   "version": "0.1.0",
   "description": "RSVP speed reading overlay — read anything on the web 3x faster.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab", "scripting", "tts"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }

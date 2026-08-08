@@ -1,5 +1,6 @@
-import { MSG_START, MSG_STATS, type StartMessage, type StatsMessage } from './src/shared/messages';
+import { MSG_START, MSG_STATS, MSG_OPEN_OPTIONS, MSG_SPEAK, MSG_SPEAK_STOP, MSG_SPEAK_STATE, MSG_SPEAK_PROGRESS, MSG_TTS_CHECK, type StartMessage, type SpeakStateMessage, type SpeakProgressMessage, type TtsCheckReply, type Message } from './src/shared/messages';
 import { recordSession } from './src/options/stats';
+import { speak } from './src/shared/tts';
 
 async function sendStart(tabId: number, source: 'selection' | 'article'): Promise<boolean> {
   try {
@@ -50,8 +51,48 @@ chrome.action.onClicked.addListener(async (tab) => {
   if (tab?.id != null) await toggleRead(tab.id);
 });
 
-chrome.runtime.onMessage.addListener((message: StatsMessage) => {
+async function notifySpeakState(tabId: number | undefined, speaking: boolean, reason?: string): Promise<void> {
+  if (tabId == null) return;
+  const msg: SpeakStateMessage = { type: MSG_SPEAK_STATE, speaking, reason };
+  try {
+    await chrome.tabs.sendMessage(tabId, msg);
+  } catch {
+    // The tab closed or navigated while speech was running.
+  }
+}
+
+async function notifySpeakProgress(tabId: number | undefined, utterance: number, charIndex: number): Promise<void> {
+  if (tabId == null) return;
+  const msg: SpeakProgressMessage = { type: MSG_SPEAK_PROGRESS, utterance, charIndex };
+  try {
+    await chrome.tabs.sendMessage(tabId, msg);
+  } catch {
+    // The tab closed or navigated while speech was running.
+  }
+}
+
+chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
   if (message.type === MSG_STATS) {
     void recordSession(message.words, message.seconds);
   }
+  if (message.type === MSG_OPEN_OPTIONS) {
+    void chrome.runtime.openOptionsPage();
+  }
+  if (message.type === MSG_SPEAK) {
+    const tabId = sender.tab?.id;
+    void speak(message.words, message.wpm, {
+      onProgress: (utterance, charIndex) => void notifySpeakProgress(tabId, utterance, charIndex),
+      onDone: () => void notifySpeakState(tabId, false),
+    }).then((result) => { if (!result.ok) void notifySpeakState(tabId, false, result.reason); });
+  }
+  if (message.type === MSG_SPEAK_STOP) {
+    chrome.tts.stop();
+  }
+  if (message.type === MSG_TTS_CHECK) {
+    void chrome.tts.getVoices().then((voices) => {
+      sendResponse({ available: voices.length > 0 } satisfies TtsCheckReply);
+    });
+    return true;
+  }
+  return false;
 });

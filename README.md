@@ -1,14 +1,15 @@
 # Rapid Read
 
-RSVP (Rapid Serial Visual Presentation) speed-reading extension for Chrome. Read anything on the web 3× faster: select text or start on the whole article, and Rapid Read flashes one word at a time at a fixation-optimized point.
+RSVP (Rapid Serial Visual Presentation) speed-reading extension for Chrome. Read anything on the web 3× faster: select text or start on the whole article, and Rapid Read flashes one word at a time at a fixed point on screen, so your eyes never move.
 
 ## Features
 
-- **Two entry modes** — read the current selection, or the whole article (paragraph-level extraction, <kbd>Alt</kbd>+<kbd>R</kbd> / toolbar click).
-- **RSVP engine** — per-token timing with fixation-point anchoring and smart punctuation pauses: commas, semicolons, colons, dashes and sentence enders get proportionally longer rests; paragraph breaks pause the longest. URLs, numbers and long words are handled explicitly.
-- **Shadow-DOM overlay** — isolated from page CSS, with dark / light / sepia themes and three font sizes. Keyboard controls while reading: `Space` pause/resume, `+`/`-` speed, `Esc` close.
+- **Two entry modes** — read the current selection immediately, or start the whole article from any paragraph: <kbd>Alt</kbd>+<kbd>R</kbd> / toolbar click highlights the first word of every paragraph, and clicking one starts there.
+- **RSVP engine** — per-token timing with smart punctuation pauses: commas, semicolons, colons, dashes and sentence enders get proportionally longer rests; paragraph breaks pause the longest. URLs, numbers and long words are handled explicitly.
+- **Shadow-DOM overlay** — isolated from page CSS, with dark / light / sepia themes, three font sizes and four fonts (the font choice applies to everything: reader word, meta line, control bar, options page). Hugeicons free icons throughout. Keyboard controls while reading: `Space` pause/resume, `←`/`→` step one word, `↑`/`↓` speed ±25 wpm, `[`/`]` skip 10 words, `Esc` close.
+- **Read aloud, in step with the words** — the **Aloud** button speaks from the current word onward through `chrome.tts`, queued in sentence-sized utterances. Speech rate is derived from your reading speed (`wpm / 180`, with a per-voice calibration slider), and each `word` event moves the reader onto the word being spoken, so the display and the voice cannot drift apart. It runs in the service worker on offline system voices, so speech survives the overlay closing. With no voice installed, the button and the whole options section stay hidden.
 - **Reading stats** — words read, average WPM and estimated time saved (vs. a 240 WPM baseline), rolled up per day and kept 90 days. Dashboard on the options page.
-- **Settings persist** via `chrome.storage.sync` (WPM 100–1000, theme, font size, smart pauses), with live preview on the options page.
+- **Settings persist and propagate** — every control on the options page saves to `chrome.storage.sync` on change (WPM 100–1000 in 25-wpm steps, reading mode, words per tick, theme, font size, font, smart pauses, read-aloud voice / rate / pitch) and a `storage.onChanged` listener applies it to every reader already open, so no tab needs reloading. Live preview on the options page.
 
 ## Install (development)
 
@@ -26,7 +27,7 @@ npm run build
 
 ```bash
 npm run check   # tsc --noEmit + eslint
-npm test        # vitest (45 tests: tokenizer, pauses, timing, stats, extractor, overlay, settings, messages)
+npm test        # vitest — tokenizer, pauses, timing, stats, extractor, start markers, overlay, settings, tts, messages
 npm run build   # icons → content script → background → options page → manifest, into dist/
 ```
 
@@ -49,13 +50,16 @@ The build runs four Vite passes into `dist/`:
 ```
 background.ts            service worker — Alt+R / toolbar toggle, ensures injection, records sessions
 src/content/index.ts     wiring — message handling, selection/article extraction, overlay lifecycle
-src/content/extractor.ts article + selection text extraction (paragraph-aware)
+src/content/extractor.ts non-destructive article + selection extraction: scores prose containers,
+                         rejects link-dense menus, widens to reach a headline outside the body wrapper
 src/content/overlay.ts   shadow-DOM RSVP overlay (controls, themes, font sizes)
-src/rsvp/engine.ts       tokenizer + RSVP timing (fixation point, per-token delays)
-src/rsvp/fixation.ts     fixation index — where in the word the eye lands
+src/rsvp/engine.ts       tokenizer + RSVP timing (per-token delays, 25 wpm speed steps)
 src/rsvp/pauses.ts       punctuation pause multipliers
 src/options/             options page UI + reading-stats rollup
+src/content/start-marker.ts  clickable paragraph-start markers, offsets derived from the same walk as the tokenizer
 src/shared/settings.ts   settings model, defaults, storage sync
+src/shared/tts.ts        chrome.tts read-aloud — utterance queue, wpm→rate, charIndex→word mapping
+src/shared/icon.ts       renders Hugeicons data as SVG (no framework renderer needed)
 src/shared/messages.ts   content ↔ background message contract
 ```
 

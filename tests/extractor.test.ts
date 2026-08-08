@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { cleanText, extractArticle } from '../src/content/extractor';
+import { cleanText, extractArticle, extractArticleContent } from '../src/content/extractor';
 
 function dom(html: string) {
   const d = new JSDOM(`<!DOCTYPE html><html><body>${html}</body></html>`);
@@ -34,6 +34,12 @@ describe('extractArticle', () => {
     const text = extractArticle();
     expect(text).toContain('Real content');
     expect(text).not.toContain('Nav junk');
+  });
+  it('returns the readable root alongside article text', () => {
+    dom('<nav>Nav junk</nav><article><p>Real content here, long enough to count as readable.</p></article>');
+    const content = extractArticleContent();
+    expect(content?.root.tagName).toBe('ARTICLE');
+    expect(content?.text).toContain('Real content');
   });
   it('returns null when nothing readable', () => {
     dom('<div>tiny</div>');

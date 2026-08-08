@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { aggregate, recordSession, getStats, type DayStats } from '../src/options/stats';
+import { aggregate, hasRecentStats, recordSession, getStats, type DayStats } from '../src/options/stats';
 
 const day = (date: string, words: number, seconds: number): DayStats => ({ date, words, seconds });
 
@@ -35,6 +35,16 @@ describe('aggregate', () => {
   it('time saved is never negative', () => {
     const r = aggregate([day('2026-08-01', 10, 1000)]);
     expect(r.timeSavedSeconds).toBe(0);
+  });
+});
+
+describe('hasRecentStats', () => {
+  it('returns true when a recent day contains words', () => {
+    expect(hasRecentStats([day('2026-08-07', 7, 4)], new Date('2026-08-07T12:00:00Z'))).toBe(true);
+  });
+
+  it('returns false when the recent window has no words', () => {
+    expect(hasRecentStats([day('2026-08-07', 0, 0)], new Date('2026-08-07T12:00:00Z'))).toBe(false);
   });
 });
 

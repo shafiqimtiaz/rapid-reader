@@ -10,6 +10,30 @@ const NUMBER_RE = /^[\d.,%$€£¥+-]*\d[\d.,%$€£¥+-]*$/;
 const LEADING_PUNCT = new Set(['"', "'", '“', '‘', '(', '[', '{', '«', '‹']);
 const TRAILING_PUNCT = new Set(['.', ',', '!', '?', ';', ':', '…', '"', '”', '’', ')', ']', '}', '»', '›', '—']);
 
+export interface Paragraphized {
+  tokens: Token[];
+  starts: number[];
+  paragraphs: string[];
+}
+
+export function tokenizeParagraphs(text: string): Paragraphized {
+  const normalized = text.replace(/\u00a0/g, ' ').replace(/\r\n/g, '\n');
+  const raw = normalized.split(/\n\s*\n/);
+  const paragraphs: string[] = [];
+  const starts: number[] = [];
+  const tokens: Token[] = [];
+
+  for (const para of raw) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (words.length === 0) continue;
+    paragraphs.push(para);
+    starts.push(tokens.length);
+    for (const w of words) tokens.push(tokenizeWord(w));
+    tokens.push({ text: '', pauseAfter: 5 });
+  }
+  return { tokens, starts, paragraphs };
+}
+
 export function tokenize(text: string): Token[] {
   const normalized = text.replace(/\u00a0/g, ' ').replace(/\r\n/g, '\n');
   const paragraphs = normalized.split(/\n\s*\n/);
@@ -62,7 +86,16 @@ export function delayFor(token: Token, wpm: number, smartPauses: boolean): numbe
   return delay;
 }
 
+export const WPM_STEP = 25;
+export const WPM_MIN = 100;
+export const WPM_MAX = 1000;
+
+/** Every speed control moves in fixed WPM_STEP jumps, so up-then-down returns to where it started. */
+export function stepWpm(wpm: number, direction: 1 | -1): number {
+  const snapped = Math.round(wpm / WPM_STEP) * WPM_STEP;
+  return Math.min(WPM_MAX, Math.max(WPM_MIN, snapped + direction * WPM_STEP));
+}
+
 export function applyWpmChange(current: PlaybackSettings, direction: 1 | -1): PlaybackSettings {
-  const next = Math.round((current.wpm * (direction > 0 ? 1.2 : 0.8)) / 10) * 10;
-  return { ...current, wpm: Math.min(1000, Math.max(100, next)) };
+  return { ...current, wpm: stepWpm(current.wpm, direction) };
 }
