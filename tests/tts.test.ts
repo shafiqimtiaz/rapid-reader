@@ -100,6 +100,17 @@ describe('speak', () => {
     expect(onProgress).toHaveBeenCalledWith(0, 6);
   });
 
+  it('reports each utterance start, the only sync point engines without word events give', async () => {
+    mockChrome({});
+    const onProgress = vi.fn();
+    const words = Array.from({ length: 900 }, (_, i) => (i % 6 === 5 ? `w${i}.` : `w${i}`));
+    await speak(words, 300, { onProgress, onDone: () => {} });
+
+    optionsOf(1).onEvent?.({ type: 'start' } as chrome.tts.TtsEvent);
+
+    expect(onProgress).toHaveBeenCalledWith(1, 0);
+  });
+
   it('queues every utterance so long articles are read to the end', async () => {
     mockChrome({});
     const words = Array.from({ length: 900 }, (_, i) => (i % 6 === 5 ? `w${i}.` : `w${i}`));

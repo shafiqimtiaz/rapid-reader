@@ -2,7 +2,7 @@ import { applyWpmChange, delayFor, sentenceStart, type Token } from '../rsvp/eng
 import type { Settings, Theme, FontFamily } from '../shared/settings';
 import { MSG_OPEN_OPTIONS, MSG_SPEAK, MSG_SPEAK_STOP, MSG_TTS_CHECK, type SpeakMessage, type TtsCheckMessage, type TtsCheckReply } from '../shared/messages';
 import { icon } from '../shared/icon';
-import { utterances, wordAtChar, type Utterance } from '../shared/tts';
+import { TTS_BASE_WPM, rateForWpm, utterances, wordAtChar, type Utterance } from '../shared/tts';
 import {
   Backward01Icon, Cancel01Icon, Forward01Icon, MinusSignIcon, PauseIcon, PlayIcon, PlusSignIcon,
   Settings01Icon, VolumeHighIcon, VolumeMute02Icon,
@@ -34,8 +34,6 @@ const FONT_FAMILIES: Record<FontFamily, string> = {
 
 /** Held arrow keys scrub silently; the voice only restarts once the position settles. */
 const SEEK_DEBOUNCE_MS = 250;
-/** Some engines never emit word events — after this long the ticker takes over pacing. */
-const WORD_EVENT_GRACE_MS = 1500;
 
 /** Wider chunks get smaller type so the whole group still fits on one line. */
 function chunkScale(wordsPerTick: number): number {
@@ -60,11 +58,12 @@ export class Overlay {
   private playing = false;
   private aloud = false;
   private speechExpected = false;
-  private watchdog = 0;
   private seekTimer = 0;
   private ttsAvailable = false;
   private utterances: Utterance[] = [];
   private spokenTokens: number[] = [];
+  /** Where the voice is in `spokenTokens`, which skips the tokens it is never given. */
+  private spokenAt = 0;
   private rafId = 0;
   private flowFrameId = 0;
   private nextAt = 0;
@@ -157,17 +156,47 @@ export class Overlay {
   }
 
   private startTicker(): void {
+    this.runTicker(
+      () => delayFor(this.tokens[this.index]!, this.settings.wpm, this.settings.smartPauses),
+      () => this.index + this.settings.wordsPerTick,
+    );
+  }
+
+  /**
+   * While Aloud is on the voice is the clock, so the display steps evenly at the voice's
+   * own rate: smart pauses would drop it a fifth of a word behind on every sentence, and
+   * the gap only ever grows. Speech events snap it back onto the word being said.
+   */
+  private startVoiceTicker(): void {
+    this.runTicker(
+      () => this.voiceStep(),
+      () => {
+        // Walk the words the voice was given: paragraph breaks are not spoken, so pausing
+        // on one costs a word of lag that nothing but an engine event can give back.
+        this.spokenAt += this.settings.wordsPerTick;
+        return this.spokenTokens[this.spokenAt] ?? this.tokens.length;
+      },
+    );
+  }
+
+  /** How long the voice spends on one flashed group at the current speed. */
+  private voiceStep(): number {
+    const voiceWpm = TTS_BASE_WPM * rateForWpm(this.settings.wpm, this.settings.ttsRate);
+    return (60000 / voiceWpm) * this.settings.wordsPerTick;
+  }
+
+  private runTicker(delay: () => number, advance: () => number): void {
     this.stopTicker();
-    this.nextAt = performance.now() + delayFor(this.tokens[this.index]!, this.settings.wpm, this.settings.smartPauses);
+    this.nextAt = performance.now() + delay();
     const tick = (now: number) => {
       if (!this.playing) return;
       while (now >= this.nextAt && this.playing) {
         this.wordsDone += this.visibleCount();
-        this.index += this.settings.wordsPerTick;
+        this.index = advance();
         if (this.index >= this.tokens.length) { this.finish(); return; }
         this.render();
         this.updateMeta();
-        this.nextAt += delayFor(this.tokens[this.index]!, this.settings.wpm, this.settings.smartPauses);
+        this.nextAt += delay();
       }
       if (this.playing) this.rafId = requestAnimationFrame(tick);
     };
@@ -217,12 +246,14 @@ export class Overlay {
   onSpeakProgress(utteranceIndex: number, charIndex: number): void {
     const utterance = this.utterances[utteranceIndex];
     if (!utterance || !this.speechExpected) return;
-    this.clearWatchdog();
     const spoken = utterance.startWord + wordAtChar(utterance, charIndex);
     const token = this.spokenTokens[spoken];
     if (token == null) return;
     this.wordsDone += Math.max(0, token - this.index);
     this.index = token;
+    this.spokenAt = spoken;
+    // The engine is ground truth, so the step interval starts over from this word.
+    this.nextAt = performance.now() + this.voiceStep();
     this.render();
     this.updateMeta();
   }
@@ -231,7 +262,6 @@ export class Overlay {
   onSpeakState(speaking: boolean, reason?: string): void {
     if (speaking || !this.speechExpected) return;
     this.speechExpected = false;
-    this.clearWatchdog();
     if (reason && this.metaEl) this.metaEl.textContent = reason;
     if (!this.playing) return;
     if (this.index >= this.tokens.length - 1) { this.finish(); return; }
@@ -260,28 +290,22 @@ export class Overlay {
     }
     if (words.length === 0) { this.finish(); return; }
     this.spokenTokens = spokenTokens;
+    this.spokenAt = 0;
     this.utterances = utterances(words);
     this.render();
     this.updateMeta();
     this.speechExpected = true;
     void chrome.runtime.sendMessage({ type: MSG_SPEAK, words, wpm: this.settings.wpm } satisfies SpeakMessage);
-    // Some engines never emit word events; fall back to the ticker rather than freeze.
-    this.watchdog = setTimeout(() => {
-      if (this.playing && this.speechExpected) this.startTicker();
-    }, WORD_EVENT_GRACE_MS) as unknown as number;
+    // Engines vary from a word event per word to none at all, so the display keeps its own
+    // voice-paced clock from the first word and lets whatever events arrive correct it.
+    this.startVoiceTicker();
   }
 
   private stopSpeech(): void {
-    this.clearWatchdog();
     clearTimeout(this.seekTimer);
     if (!this.speechExpected) return;
     this.speechExpected = false;
     void chrome.runtime.sendMessage({ type: MSG_SPEAK_STOP });
-  }
-
-  private clearWatchdog(): void {
-    clearTimeout(this.watchdog);
-    this.watchdog = 0;
   }
 
   private updateAloudBtn(): void {

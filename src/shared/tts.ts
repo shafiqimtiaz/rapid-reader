@@ -96,6 +96,12 @@ export async function speak(words: string[], wpm: number, handlers: SpeakHandler
       pitch: ttsPitch,
       enqueue: i > 0,
       onEvent: (event) => {
+        // An utterance starting places the reader exactly; on engines with no word
+        // events it is the only correction the display ever gets.
+        if (event.type === 'start') {
+          handlers.onProgress(i, 0);
+          return;
+        }
         if (event.type === 'word' || event.type === 'sentence') {
           handlers.onProgress(i, event.charIndex ?? 0);
           return;

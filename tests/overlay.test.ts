@@ -389,24 +389,62 @@ describe('Overlay', () => {
     vi.useRealTimers();
   });
 
-  it('falls back to the ticker when the engine sends no word events', async () => {
-    vi.useFakeTimers();
+  it('paces the display at the voice speed, not at the pause-inflated reading ticker', async () => {
     mockRuntime(true);
     const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
     overlay.mount();
-    overlay.start(tokenize('one two three'), 300);
-    await vi.advanceTimersByTimeAsync(0);
+    // Every word ends a sentence, so the reading ticker would hold each one for 600ms.
+    overlay.start(tokenize('a. b. c. d. e. f. g. h.'), 300);
+    await flush();
     (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
-    let frames = 0;
-    globalThis.requestAnimationFrame = () => { frames++; return 1; };
+    const frames = driveFrames();
 
     overlay.resume();
-    expect(frames).toBe(0);
+    const t0 = performance.now();
+    frames.tick(t0 + 1000);
 
-    await vi.advanceTimersByTimeAsync(1600);
-    expect(frames).toBeGreaterThan(0);
+    // 300 wpm at rate 1.0 is 200ms a word: the voice covers five in a second.
+    expect(overlayEl('.word')!.textContent).toBe('f.');
     overlay.unmount();
-    vi.useRealTimers();
+  });
+
+  it('steps over paragraph breaks while the voice reads, since the voice never says them', async () => {
+    mockRuntime(true);
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two\n\nthree four'), 300);
+    await flush();
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    const frames = driveFrames();
+
+    overlay.resume();
+    const t0 = performance.now();
+    frames.tick(t0 + 400);
+
+    // Two words in: the voice is on "three", so dwelling on the ¶ would cost a word.
+    expect(overlayEl('.word')!.textContent).toBe('three');
+    overlay.unmount();
+  });
+
+  it('restarts the interval from the word the voice reports, so it neither stalls nor races', async () => {
+    mockRuntime(true);
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two three four five six seven eight nine ten'), 300);
+    await flush();
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    const frames = driveFrames();
+    overlay.resume();
+
+    // Utterance text is "one two three four …"; charIndex 8 is the start of "three".
+    overlay.onSpeakProgress(0, 8);
+    const t0 = performance.now();
+
+    frames.tick(t0 + 150);
+    expect(overlayEl('.word')!.textContent).toBe('three');
+    frames.tick(t0 + 260);
+    expect(overlayEl('.word')!.textContent).toBe('four');
+    overlay.unmount();
   });
 
   it('hides the aloud button when the browser has no voice', async () => {
@@ -461,6 +499,14 @@ function mockRuntime(available: boolean) {
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Hands the ticker's frame callback back so a test can drive its clock by hand. */
+function driveFrames() {
+  let pending: FrameRequestCallback | null = null;
+  globalThis.requestAnimationFrame = (fn: FrameRequestCallback) => { pending = fn; return 1; };
+  globalThis.cancelAnimationFrame = () => { pending = null; };
+  return { tick(now: number) { const fn = pending; pending = null; fn?.(now); } };
+}
 
 function hostWord() {
   const host = document.documentElement.lastElementChild as HTMLElement;
