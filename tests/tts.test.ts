@@ -93,6 +93,19 @@ describe('speak', () => {
     expect(optionsOf(0).enqueue).toBe(false);
   });
 
+  it('asks for a voice that reports words without insisting on one', async () => {
+    mockChrome({});
+    await speak(['hello'], 300, noHandlers);
+
+    const options = optionsOf(0) as chrome.tts.SpeakOptions & { desiredEventTypes?: string[] };
+    expect(options.desiredEventTypes).toContain('word');
+    // Every type the handler acts on has to be listed, or it may never arrive.
+    for (const type of ['sentence', 'start', 'end', 'error', 'interrupted', 'cancelled']) {
+      expect(options.desiredEventTypes).toContain(type);
+    }
+    expect(options.requiredEventTypes).toBeUndefined();
+  });
+
   it('falls back to the default voice when the stored voice is gone', async () => {
     mockChrome({ ttsVoice: 'Uninstalled Voice' });
     await speak(['hello'], 300, noHandlers);

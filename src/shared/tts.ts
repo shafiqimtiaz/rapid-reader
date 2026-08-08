@@ -102,6 +102,10 @@ export async function speak(words: string[], wpm: number, handlers: SpeakHandler
       rate: rateForWpm(wpm, ttsRate),
       pitch: ttsPitch,
       enqueue: i > 0,
+      // Asked for, not required: a voice that reports words lets the reader follow exactly,
+      // but a voice that reports none is still better than refusing to speak. The list has
+      // to name every type handled below, since anything left out may not be delivered.
+      desiredEventTypes: ['word', 'sentence', 'start', 'end', 'error', 'interrupted', 'cancelled'],
       onEvent: (event) => {
         // An utterance starting places the reader exactly; on engines with no word
         // events it is the only correction the display ever gets.
