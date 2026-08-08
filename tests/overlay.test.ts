@@ -256,35 +256,76 @@ describe('Overlay', () => {
     overlay.unmount();
   });
 
-  it('speaks the text from the current word onward and toggles back to stop', async () => {
+  it('arms read-aloud without making a sound until Play', async () => {
     const sendMessage = mockRuntime(true);
     const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
     overlay.mount();
-    overlay.start(tokenize('one two three four'), 300, 2);
+    overlay.start(tokenize('one two three four'), 300);
     await flush();
-
     const aloud = overlayEl('.bar [data-action="aloud"]') as HTMLElement;
-    expect(aloud.hidden).toBe(false);
-    aloud.click();
-    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK, words: ['three', 'four'], wpm: 300 });
-    expect(aloud.textContent).toContain('Stop');
+    sendMessage.mockClear();
 
     aloud.click();
-    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK_STOP });
-    expect(aloud.textContent).toContain('Aloud');
+
+    expect(aloud.getAttribute('aria-pressed')).toBe('true');
+    expect(aloud.classList.contains('on')).toBe(true);
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: MSG_SPEAK }));
+
+    overlay.resume();
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK, words: ['one', 'two', 'three', 'four'], wpm: 300 });
     overlay.unmount();
   });
 
-  it('speaks from the paragraph the reader was started on', async () => {
+  it('disarms without touching playback, handing pacing back to the ticker', async () => {
     const sendMessage = mockRuntime(true);
     const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
     overlay.mount();
-    overlay.start(tokenize('intro words here\n\nsecond paragraph starts here'), 300, 4);
+    overlay.start(tokenize('one two three four'), 300);
     await flush();
+    const aloud = overlayEl('.bar [data-action="aloud"]') as HTMLElement;
+    aloud.click();
+    overlay.resume();
+    sendMessage.mockClear();
 
+    aloud.click();
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK_STOP });
+    expect(aloud.getAttribute('aria-pressed')).toBe('false');
+    expect(overlayEl('.bar [data-action="pause"]')!.textContent).toContain('Pause');
+    overlay.unmount();
+  });
+
+  it('starts the voice on Play and stops it on Pause', async () => {
+    const sendMessage = mockRuntime(true);
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two three'), 300);
+    await flush();
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    const play = overlayEl('.bar [data-action="pause"]') as HTMLElement;
+
+    play.click();
+    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK, words: ['one', 'two', 'three'], wpm: 300 });
+
+    sendMessage.mockClear();
+    play.click();
+    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK_STOP });
+    overlay.unmount();
+  });
+
+  it('resumes from the start of the current sentence, not mid-clause', async () => {
+    const sendMessage = mockRuntime(true);
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('First sentence here. Second sentence runs on.'), 300, 5);
+    await flush();
     (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
 
-    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK, words: ['second', 'paragraph', 'starts', 'here'], wpm: 300 });
+    overlay.resume();
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK, words: ['Second', 'sentence', 'runs', 'on.'], wpm: 300 });
+    expect(overlayEl('.word')!.textContent).toBe('Second');
     overlay.unmount();
   });
 
@@ -295,12 +336,12 @@ describe('Overlay', () => {
     overlay.start(tokenize('one two\n\nthree four'), 300);
     await flush();
     (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    overlay.resume();
 
     // Utterance text is "one two three four"; charIndex 8 is the start of "three".
     overlay.onSpeakProgress(0, 8);
 
     expect(overlayEl('.word')!.textContent).toBe('three');
-    expect(overlayEl('.meta')!.textContent).toContain('300 wpm');
     overlay.unmount();
   });
 
@@ -311,12 +352,56 @@ describe('Overlay', () => {
     overlay.start(tokenize('one two three'), 300);
     await flush();
     (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
-    overlay.setSpeaking(false);
+    overlay.resume();
+    overlay.pause();
 
     overlay.onSpeakProgress(0, 8);
 
     expect(overlayEl('.word')!.textContent).toBe('one');
     overlay.unmount();
+  });
+
+  it('debounces seeking so a held key does not stutter the voice', async () => {
+    vi.useFakeTimers();
+    const sendMessage = mockRuntime(true);
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two three four five six'), 300);
+    await vi.advanceTimersByTimeAsync(0);
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    overlay.resume();
+    sendMessage.mockClear();
+
+    overlay.step(1);
+    overlay.step(1);
+    overlay.step(1);
+    const speakCalls = () => sendMessage.mock.calls.filter((call) => (call[0] as { type: string }).type === MSG_SPEAK);
+    expect(speakCalls()).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(speakCalls()).toHaveLength(1);
+    overlay.unmount();
+    vi.useRealTimers();
+  });
+
+  it('falls back to the ticker when the engine sends no word events', async () => {
+    vi.useFakeTimers();
+    mockRuntime(true);
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two three'), 300);
+    await vi.advanceTimersByTimeAsync(0);
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    let frames = 0;
+    globalThis.requestAnimationFrame = () => { frames++; return 1; };
+
+    overlay.resume();
+    expect(frames).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(frames).toBeGreaterThan(0);
+    overlay.unmount();
+    vi.useRealTimers();
   });
 
   it('hides the aloud button when the browser has no voice', async () => {
@@ -337,6 +422,7 @@ describe('Overlay', () => {
     overlay.start(tokenize('one two'), 300);
     await flush();
     (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    overlay.resume();
     sendMessage.mockClear();
 
     overlay.unmount();
@@ -344,7 +430,7 @@ describe('Overlay', () => {
     expect(sendMessage).toHaveBeenCalledWith({ type: MSG_SPEAK_STOP });
   });
 
-  it('resets the aloud button and shows why when speech could not start', async () => {
+  it('reports why speech could not start', async () => {
     mockRuntime(true);
     const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
     overlay.mount();
@@ -352,8 +438,9 @@ describe('Overlay', () => {
     await flush();
     const aloud = overlayEl('.bar [data-action="aloud"]') as HTMLElement;
     aloud.click();
+    overlay.resume();
 
-    overlay.setSpeaking(false, 'No text-to-speech voice is installed in this browser.');
+    overlay.onSpeakState(false, 'No text-to-speech voice is installed in this browser.');
 
     expect(aloud.textContent).toContain('Aloud');
     expect(overlayEl('.meta')!.textContent).toContain('No text-to-speech voice');

@@ -1,11 +1,11 @@
-import { applyWpmChange, delayFor, type Token } from '../rsvp/engine';
+import { applyWpmChange, delayFor, sentenceStart, type Token } from '../rsvp/engine';
 import type { Settings, Theme, FontFamily } from '../shared/settings';
 import { MSG_OPEN_OPTIONS, MSG_SPEAK, MSG_SPEAK_STOP, MSG_TTS_CHECK, type SpeakMessage, type TtsCheckMessage, type TtsCheckReply } from '../shared/messages';
 import { icon } from '../shared/icon';
 import { utterances, wordAtChar, type Utterance } from '../shared/tts';
 import {
   Backward01Icon, Cancel01Icon, Forward01Icon, MinusSignIcon, PauseIcon, PlayIcon, PlusSignIcon,
-  Settings01Icon, StopCircleIcon, VolumeHighIcon,
+  Settings01Icon, VolumeHighIcon, VolumeMute02Icon,
 } from '@hugeicons/core-free-icons';
 
 interface OverlayCallbacks {
@@ -32,6 +32,11 @@ const FONT_FAMILIES: Record<FontFamily, string> = {
   rounded: `"Nunito", "Avenir Next", "Segoe UI", sans-serif`,
 };
 
+/** Held arrow keys scrub silently; the voice only restarts once the position settles. */
+const SEEK_DEBOUNCE_MS = 250;
+/** Some engines never emit word events — after this long the ticker takes over pacing. */
+const WORD_EVENT_GRACE_MS = 1500;
+
 /** Wider chunks get smaller type so the whole group still fits on one line. */
 function chunkScale(wordsPerTick: number): number {
   if (wordsPerTick <= 1) return 1;
@@ -53,7 +58,10 @@ export class Overlay {
   private tokens: Token[] = [];
   private index = 0;
   private playing = false;
-  private speaking = false;
+  private aloud = false;
+  private speechExpected = false;
+  private watchdog = 0;
+  private seekTimer = 0;
   private ttsAvailable = false;
   private utterances: Utterance[] = [];
   private spokenTokens: number[] = [];
@@ -98,7 +106,7 @@ export class Overlay {
   unmount(): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
     if (this.flowFrameId) cancelAnimationFrame(this.flowFrameId);
-    this.stopAloud();
+    this.stopSpeech();
     this.playing = false;
     this.host?.remove();
     this.host = null;
@@ -122,13 +130,34 @@ export class Overlay {
     this.pause();
   }
 
-  pause(): void { this.playing = false; if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; } this.updatePlayBtn(); this.updateMeta(); }
+  pause(): void {
+    this.playing = false;
+    this.stopTicker();
+    this.stopSpeech();
+    this.updatePlayBtn();
+    this.updateMeta();
+  }
+
+  /** Play is the only transport: it starts the voice when Aloud is on, the ticker otherwise. */
   resume(): void {
     if (this.playing || this.tokens.length === 0) return;
     this.playing = true;
     if (!this.startedAt) this.startedAt = Date.now();
     this.updatePlayBtn();
     this.updateMeta();
+    if (this.aloud) {
+      this.startSpeech();
+      return;
+    }
+    this.startTicker();
+  }
+
+  private stopTicker(): void {
+    if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
+  }
+
+  private startTicker(): void {
+    this.stopTicker();
     this.nextAt = performance.now() + delayFor(this.tokens[this.index]!, this.settings.wpm, this.settings.smartPauses);
     const tick = (now: number) => {
       if (!this.playing) return;
@@ -149,14 +178,15 @@ export class Overlay {
     this.index = Math.min(this.tokens.length - 1, Math.max(0, this.index + delta));
     this.render();
     this.updateMeta();
+    this.reseekSpeech();
   }
 
   skip(delta: number): void { this.step(delta); }
   setSpeed(wpm: number): void {
     this.settings = { ...this.settings, wpm };
-    if (this.playing) { this.pause(); this.resume(); }
-    // Speech is paced off wpm, so a speed change has to restart the utterance queue.
-    if (this.speaking) { this.stopAloud(); this.toggleAloud(); }
+    if (this.playing && !this.aloud) { this.startTicker(); }
+    // Speech rate is derived from wpm, so the utterance queue has to be rebuilt.
+    this.reseekSpeech();
     this.updateMeta();
   }
   updateSettings(s: Settings): void {
@@ -167,29 +197,27 @@ export class Overlay {
     this.updateMeta();
   }
 
-  /** Speaks the text from the current token onward via the service worker. */
+  /** Arms or disarms read-aloud. Nothing is spoken until Play; nothing stops but the voice. */
   toggleAloud(): void {
-    if (this.speaking) { this.stopAloud(); return; }
-    // Paragraph-break tokens are dropped for speech, so keep a map back to the reader.
-    const spokenTokens: number[] = [];
-    const words: string[] = [];
-    for (let i = this.index; i < this.tokens.length; i++) {
-      if (this.tokens[i]!.text === '') continue;
-      spokenTokens.push(i);
-      words.push(this.tokens[i]!.text);
+    this.aloud = !this.aloud;
+    this.updateAloudBtn();
+    if (!this.aloud) {
+      this.stopSpeech();
+      // The voice was the clock, so hand pacing back to the ticker.
+      if (this.playing) this.startTicker();
+      return;
     }
-    if (words.length === 0) return;
-    this.spokenTokens = spokenTokens;
-    this.utterances = utterances(words);
-    this.pause();
-    this.setSpeaking(true);
-    void chrome.runtime.sendMessage({ type: MSG_SPEAK, words, wpm: this.settings.wpm } satisfies SpeakMessage);
+    if (this.playing) {
+      this.stopTicker();
+      this.startSpeech();
+    }
   }
 
   /** Moves the reader onto the word the voice is currently saying. */
   onSpeakProgress(utteranceIndex: number, charIndex: number): void {
     const utterance = this.utterances[utteranceIndex];
-    if (!utterance || !this.speaking) return;
+    if (!utterance || !this.speechExpected) return;
+    this.clearWatchdog();
     const spoken = utterance.startWord + wordAtChar(utterance, charIndex);
     const token = this.spokenTokens[spoken];
     if (token == null) return;
@@ -199,20 +227,70 @@ export class Overlay {
     this.updateMeta();
   }
 
-  stopAloud(): void {
-    if (!this.speaking) return;
-    this.setSpeaking(false);
+  /** The service worker reporting that speech stopped, for whatever reason. */
+  onSpeakState(speaking: boolean, reason?: string): void {
+    if (speaking || !this.speechExpected) return;
+    this.speechExpected = false;
+    this.clearWatchdog();
+    if (reason && this.metaEl) this.metaEl.textContent = reason;
+    if (!this.playing) return;
+    if (this.index >= this.tokens.length - 1) { this.finish(); return; }
+    // Speech died early (engine error, no voice). Keep reading visually.
+    this.startTicker();
+  }
+
+  /** Rebuilds the utterance queue from the current sentence; debounced for held keys. */
+  private reseekSpeech(): void {
+    if (!this.playing || !this.aloud) return;
+    this.stopSpeech();
+    clearTimeout(this.seekTimer);
+    this.seekTimer = setTimeout(() => this.startSpeech(), SEEK_DEBOUNCE_MS) as unknown as number;
+  }
+
+  private startSpeech(): void {
+    clearTimeout(this.seekTimer);
+    this.index = sentenceStart(this.tokens, this.index);
+    // Paragraph-break tokens are dropped for speech, so keep a map back to the reader.
+    const spokenTokens: number[] = [];
+    const words: string[] = [];
+    for (let i = this.index; i < this.tokens.length; i++) {
+      if (this.tokens[i]!.text === '') continue;
+      spokenTokens.push(i);
+      words.push(this.tokens[i]!.text);
+    }
+    if (words.length === 0) { this.finish(); return; }
+    this.spokenTokens = spokenTokens;
+    this.utterances = utterances(words);
+    this.render();
+    this.updateMeta();
+    this.speechExpected = true;
+    void chrome.runtime.sendMessage({ type: MSG_SPEAK, words, wpm: this.settings.wpm } satisfies SpeakMessage);
+    // Some engines never emit word events; fall back to the ticker rather than freeze.
+    this.watchdog = setTimeout(() => {
+      if (this.playing && this.speechExpected) this.startTicker();
+    }, WORD_EVENT_GRACE_MS) as unknown as number;
+  }
+
+  private stopSpeech(): void {
+    this.clearWatchdog();
+    clearTimeout(this.seekTimer);
+    if (!this.speechExpected) return;
+    this.speechExpected = false;
     void chrome.runtime.sendMessage({ type: MSG_SPEAK_STOP });
   }
 
-  setSpeaking(speaking: boolean, reason?: string): void {
-    this.speaking = speaking;
-    if (this.aloudBtn) {
-      this.aloudBtn.innerHTML = speaking
-        ? `${icon(StopCircleIcon)}<span>Stop</span>`
-        : `${icon(VolumeHighIcon)}<span>Aloud</span>`;
-    }
-    if (reason && this.metaEl) this.metaEl.textContent = reason;
+  private clearWatchdog(): void {
+    clearTimeout(this.watchdog);
+    this.watchdog = 0;
+  }
+
+  private updateAloudBtn(): void {
+    if (!this.aloudBtn) return;
+    this.aloudBtn.innerHTML = this.aloud
+      ? `${icon(VolumeHighIcon)}<span>Aloud</span>`
+      : `${icon(VolumeMute02Icon)}<span>Aloud</span>`;
+    this.aloudBtn.setAttribute('aria-pressed', String(this.aloud));
+    this.aloudBtn.classList.toggle('on', this.aloud);
   }
 
   showEmpty(): void { this.renderState('No readable text found.', ''); }
@@ -341,6 +419,7 @@ export class Overlay {
         .bar button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: ${t.control}; font-size: 14px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-family: inherit; white-space: nowrap; }
         .icon { flex: none; display: block; }
         .bar button:hover { background: ${t.accent}33; color: ${t.accent}; }
+        .bar button.on { color: ${t.accent}; background: ${withAlpha(t.accent, 0.16)}; }
         .bar .primary { color: ${t.accent}; font-weight: 600; min-width: 96px; text-align: center; }
         .close { display: inline-flex; align-items: center; gap: 6px; position: fixed; z-index: 3; top: 18px; right: 18px; appearance: none; border: 1px solid ${t.accent}55; background: ${withAlpha(t.bg, 0.9)}; color: ${t.control}; font-size: 13px; font-weight: 500; line-height: 1.2; padding: 8px 14px; border-radius: 999px; cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease; }
         .close:hover { border-color: ${t.accent}; background: ${withAlpha(t.accent, 0.15)}; color: ${t.accent}; }
@@ -361,7 +440,7 @@ export class Overlay {
         <button data-action="forward" title="Forward 10 words">${icon(Forward01Icon)}<span>10</span></button>
         <button data-action="slower" title="Slower">${icon(MinusSignIcon)}<span>Speed</span></button>
         <button data-action="faster" title="Faster">${icon(PlusSignIcon)}<span>Speed</span></button>
-        <button data-action="aloud" title="Read aloud from here with the system voice" hidden>${icon(VolumeHighIcon)}<span>Aloud</span></button>
+        <button data-action="aloud" aria-pressed="false" title="Read aloud — takes effect on Play" hidden>${icon(VolumeMute02Icon)}<span>Aloud</span></button>
         <button data-action="settings" title="Settings">${icon(Settings01Icon)}<span>Settings</span></button>
       </div>`;
   }

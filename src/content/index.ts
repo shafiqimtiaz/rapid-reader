@@ -78,7 +78,7 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
     void loadSettings().then((s) => overlay?.updateSettings(s));
   }
   if (message.type === MSG_SPEAK_STATE) {
-    overlay?.setSpeaking(message.speaking, message.reason);
+    overlay?.onSpeakState(message.speaking, message.reason);
   }
   if (message.type === MSG_SPEAK_PROGRESS) {
     overlay?.onSpeakProgress(message.utterance, message.charIndex);

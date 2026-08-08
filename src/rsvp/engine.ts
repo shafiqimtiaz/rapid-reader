@@ -72,6 +72,21 @@ function tokenizeWord(raw: string): Token {
   return { text: word, pauseAfter: pauseMultiplier(pauseChar) };
 }
 
+const SENTENCE_END = /[.!?…]["'”’)\]]?$/;
+
+/**
+ * First token of the sentence holding `index`. Speech restarts here after a pause
+ * because chrome.tts cannot resume mid-utterance, and a fragment is jarring.
+ */
+export function sentenceStart(tokens: Token[], index: number): number {
+  for (let i = Math.min(index, tokens.length - 1); i > 0; i--) {
+    const previous = tokens[i - 1];
+    if (!previous) break;
+    if (previous.text === '' || SENTENCE_END.test(previous.text)) return i;
+  }
+  return 0;
+}
+
 export interface PlaybackSettings {
   wpm: number;
   smartPauses: boolean;
