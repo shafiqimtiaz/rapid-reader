@@ -43,7 +43,7 @@ The build runs four Vite passes into `dist/`:
 
 `npm run dev:content` rebuilds the content script on change; after a content-script change, reload the extension on `chrome://extensions`.
 
-`test-pages/article.html` is a local sample article for manual smoke testing (`file://` pages work because the content script is declared in the manifest).
+`test-pages/article.html` is a local sample article for manual smoke testing. Note: since the extension injects on user gesture (activeTab) rather than via a static content script, `file://` pages need **Allow access to file URLs** enabled in `chrome://extensions` → Rapid Reader → Details → Site access.
 
 ## Architecture
 
