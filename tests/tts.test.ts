@@ -37,6 +37,15 @@ describe('utterances', () => {
     expect(spoken).toBe(words.length);
   });
 
+  it('cuts the first utterance short so the reader can time the voice early', () => {
+    const words = Array.from({ length: 900 }, (_, i) => (i % 6 === 5 ? `w${i}.` : `w${i}`));
+    const queue = utterances(words);
+
+    expect(queue[0]!.text.length).toBeLessThan(MAX_CHUNK / 3);
+    expect(queue[1]!.text.length).toBeGreaterThan(MAX_CHUNK / 3);
+    expect(queue[0]!.text.endsWith('.')).toBe(true);
+  });
+
   it('returns nothing when there are no words', () => {
     expect(utterances([])).toEqual([]);
     expect(utterances([''])).toEqual([]);

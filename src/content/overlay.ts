@@ -34,6 +34,8 @@ const FONT_FAMILIES: Record<FontFamily, string> = {
 
 /** Held arrow keys scrub silently; the voice only restarts once the position settles. */
 const SEEK_DEBOUNCE_MS = 250;
+/** Below this a sync span is too short to time the voice by; the anchor waits for more. */
+const MIN_SYNC_WORDS = 8;
 
 /** Wider chunks get smaller type so the whole group still fits on one line. */
 function chunkScale(wordsPerTick: number): number {
@@ -64,6 +66,10 @@ export class Overlay {
   private spokenTokens: number[] = [];
   /** Where the voice is in `spokenTokens`, which skips the tokens it is never given. */
   private spokenAt = 0;
+  /** Measured speech speed, and the last event it was measured from. */
+  private voiceWpm = 0;
+  private syncWord = -1;
+  private syncAt = 0;
   private rafId = 0;
   private flowFrameId = 0;
   private nextAt = 0;
@@ -157,9 +163,20 @@ export class Overlay {
 
   private startTicker(): void {
     this.runTicker(
-      () => delayFor(this.tokens[this.index]!, this.settings.wpm, this.settings.smartPauses),
+      () => this.chunkDelay(),
       () => this.index + this.settings.wordsPerTick,
     );
+  }
+
+  /** A chunk stays up for as long as its words would take one at a time, so wpm holds. */
+  private chunkDelay(): number {
+    let total = 0;
+    for (let i = 0; i < this.settings.wordsPerTick; i++) {
+      const token = this.tokens[this.index + i];
+      if (!token) break;
+      total += delayFor(token, this.settings.wpm, this.settings.smartPauses);
+    }
+    return total;
   }
 
   /**
@@ -179,10 +196,33 @@ export class Overlay {
     );
   }
 
-  /** How long the voice spends on one flashed group at the current speed. */
+  /** How long the voice spends on one flashed group, by the best estimate of its speed. */
   private voiceStep(): number {
-    const voiceWpm = TTS_BASE_WPM * rateForWpm(this.settings.wpm, this.settings.ttsRate);
-    return (60000 / voiceWpm) * this.settings.wordsPerTick;
+    return (60000 / (this.voiceWpm || this.requestedVoiceWpm())) * this.settings.wordsPerTick;
+  }
+
+  /** What the engine was asked for. Engines are free to ignore it, hence the timing below. */
+  private requestedVoiceWpm(): number {
+    return TTS_BASE_WPM * rateForWpm(this.settings.wpm, this.settings.ttsRate);
+  }
+
+  /**
+   * `wpm / 180` is a guess at what a voice does at rate 1.0, and a wrong guess drifts the
+   * display between engine events. Two events far enough apart time the voice for real, so
+   * the guess only has to hold until the first of those lands.
+   */
+  private calibrateVoice(spoken: number): void {
+    const now = performance.now();
+    const words = spoken - this.syncWord;
+    const elapsed = now - this.syncAt;
+    if (this.syncWord < 0) { this.syncWord = spoken; this.syncAt = now; return; }
+    if (words < MIN_SYNC_WORDS || elapsed <= 0) return;
+    const requested = this.requestedVoiceWpm();
+    const measured = (words / elapsed) * 60000;
+    // Half to double the requested speed; anything outside that is a stall or a bad report.
+    this.voiceWpm = Math.min(requested * 2, Math.max(requested / 2, measured));
+    this.syncWord = spoken;
+    this.syncAt = now;
   }
 
   private runTicker(delay: () => number, advance: () => number): void {
@@ -249,6 +289,7 @@ export class Overlay {
     const spoken = utterance.startWord + wordAtChar(utterance, charIndex);
     const token = this.spokenTokens[spoken];
     if (token == null) return;
+    this.calibrateVoice(spoken);
     this.wordsDone += Math.max(0, token - this.index);
     this.index = token;
     this.spokenAt = spoken;
@@ -291,6 +332,9 @@ export class Overlay {
     if (words.length === 0) { this.finish(); return; }
     this.spokenTokens = spokenTokens;
     this.spokenAt = 0;
+    // A fresh utterance queue restarts the voice, so its timing is measured again.
+    this.voiceWpm = 0;
+    this.syncWord = -1;
     this.utterances = utterances(words);
     this.render();
     this.updateMeta();

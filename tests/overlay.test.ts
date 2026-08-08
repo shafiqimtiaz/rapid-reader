@@ -447,6 +447,51 @@ describe('Overlay', () => {
     overlay.unmount();
   });
 
+  it('holds a chunk for as long as its words would take one at a time', () => {
+    const clock = fakeClock();
+    const overlay = new Overlay({ ...settings, wordsPerTick: 3 }, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('one two three four five six seven eight nine'), 300);
+    const frames = driveFrames();
+
+    overlay.resume();
+    // Three words at 300 wpm is 600ms of reading, not the 200ms of a single word.
+    clock.set(500);
+    frames.tick(500);
+    expect(overlayEl('.word')!.textContent).toBe('one two three');
+    clock.set(650);
+    frames.tick(650);
+    expect(overlayEl('.word')!.textContent).toBe('four five six');
+    overlay.unmount();
+    clock.restore();
+  });
+
+  it('learns the voice real speed from the words it reports, rather than trusting the rate', async () => {
+    const clock = fakeClock();
+    mockRuntime(true);
+    const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
+    overlay.mount();
+    overlay.start(tokenize('w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14'), 300);
+    await flush();
+    (overlayEl('.bar [data-action="aloud"]') as HTMLElement).click();
+    const frames = driveFrames();
+    overlay.resume();
+
+    // This engine ignores the requested rate: ten words took 4s, so 150 wpm, not 300.
+    overlay.onSpeakProgress(0, 0);
+    clock.set(4000);
+    overlay.onSpeakProgress(0, 'w0 w1 w2 w3 w4 w5 w6 w7 w8 '.length);
+
+    clock.set(4300);
+    frames.tick(4300);
+    expect(overlayEl('.word')!.textContent).toBe('w9');
+    clock.set(4450);
+    frames.tick(4450);
+    expect(overlayEl('.word')!.textContent).toBe('w10');
+    overlay.unmount();
+    clock.restore();
+  });
+
   it('hides the aloud button when the browser has no voice', async () => {
     mockRuntime(false);
     const overlay = new Overlay(settings, { onClose: () => {}, onStats: () => {} });
@@ -499,6 +544,17 @@ function mockRuntime(available: boolean) {
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** The ticker phases itself off performance.now(), so a test needs to own that clock. */
+function fakeClock() {
+  const real = globalThis.performance;
+  let now = 0;
+  globalThis.performance = { now: () => now } as unknown as Performance;
+  return {
+    set(at: number) { now = at; },
+    restore() { globalThis.performance = real; },
+  };
+}
 
 /** Hands the ticker's frame callback back so a test can drive its clock by hand. */
 function driveFrames() {

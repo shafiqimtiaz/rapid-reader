@@ -2,6 +2,12 @@ import { loadSettings } from './settings';
 
 /** Engines choke on very long utterances, so the article is queued in pieces. */
 export const MAX_CHUNK = 1200;
+/**
+ * The first piece is cut short at the first sentence past this. Engines that report
+ * nothing finer than an utterance give the reader no way to time the voice until the
+ * second one starts, and a full-length first piece leaves that 200 words away.
+ */
+export const FIRST_CHUNK = 160;
 
 /** Roughly what chrome.tts voices speak at rate 1.0, used to map wpm onto a rate. */
 export const TTS_BASE_WPM = 180;
@@ -41,7 +47,8 @@ export function utterances(words: string[]): Utterance[] {
     if (text.length > 0) text += ' ';
     wordStarts.push(text.length);
     text += word;
-    if (SENTENCE_END.test(word) && text.length > MAX_CHUNK / 3) flush(i + 1);
+    const flushAfter = out.length === 0 ? FIRST_CHUNK : MAX_CHUNK / 3;
+    if (SENTENCE_END.test(word) && text.length > flushAfter) flush(i + 1);
   }
   flush(words.length);
   return out;
